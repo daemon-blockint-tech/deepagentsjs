@@ -1,5 +1,15 @@
 # deepagents
 
+## 1.12.3
+
+### Patch Changes
+
+- [#724](https://github.com/langchain-ai/deepagentsjs/pull/724) [`77e104f`](https://github.com/langchain-ai/deepagentsjs/commit/77e104f26a62ae34afbb1393edf191009d37280c) Thanks [@gethin-langchain](https://github.com/gethin-langchain)! - feat(deepagents): add `output_mode` parameter to the `grep` tool (`files_with_matches` / `content` / `count`)
+
+- [#732](https://github.com/langchain-ai/deepagentsjs/pull/732) [`239be7e`](https://github.com/langchain-ai/deepagentsjs/commit/239be7e883227e463504652bc00272ec947a21a6) Thanks [@hntrl](https://github.com/hntrl)! - fix(deepagents): disable summary-input trimming by default
+
+  Match Python DeepAgents by providing the full selected conversation to the summarizer unless `trimTokensToSummarize` is explicitly configured. This prevents oversized tool results from producing context-empty summaries under the default configuration.
+
 ## 1.12.2
 
 ### Patch Changes
