@@ -76,7 +76,7 @@ export async function checkRateLimit(
 ): Promise<{ allowed: boolean; retryAfter: number }> {
   const now = Date.now();
   const refillRate = config.maxRequests / config.windowMs; // tokens per ms
-  let bucket = (await getBucket(key)) ?? {
+  const bucket = (await getBucket(key)) ?? {
     tokens: config.burst,
     lastUpdate: now,
   };
