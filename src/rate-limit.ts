@@ -27,13 +27,18 @@ const EXPENSIVE_MODEL_LIMIT: RateLimitConfig = {
   burst: 2,
 };
 
-const EXPENSIVE_MODELS = new Set(["qwen/qwen-image-3-pro", "openai/gpt-transcribe"]);
+const EXPENSIVE_MODELS = new Set([
+  "qwen/qwen-image-3-pro",
+  "openai/gpt-transcribe",
+]);
 
 function isExpensiveModel(model?: string): boolean {
   return Boolean(model && EXPENSIVE_MODELS.has(model));
 }
 
-const hasRedisEnv = Boolean(process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN);
+const hasRedisEnv = Boolean(
+  process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN,
+);
 const redis = hasRedisEnv
   ? new Redis({
       url: process.env.UPSTASH_REDIS_REST_URL!,
@@ -52,7 +57,11 @@ async function getBucket(key: string): Promise<TokenBucket | null> {
   return value ?? null;
 }
 
-async function setBucket(key: string, bucket: TokenBucket, ttlMs: number): Promise<void> {
+async function setBucket(
+  key: string,
+  bucket: TokenBucket,
+  ttlMs: number,
+): Promise<void> {
   if (redis) {
     await redis.set(key, JSON.stringify(bucket), { px: ttlMs });
   } else {
@@ -63,11 +72,14 @@ async function setBucket(key: string, bucket: TokenBucket, ttlMs: number): Promi
 export async function checkRateLimit(
   key: string,
   config: RateLimitConfig,
-  cost = 1
+  cost = 1,
 ): Promise<{ allowed: boolean; retryAfter: number }> {
   const now = Date.now();
   const refillRate = config.maxRequests / config.windowMs; // tokens per ms
-  let bucket = (await getBucket(key)) ?? { tokens: config.burst, lastUpdate: now };
+  let bucket = (await getBucket(key)) ?? {
+    tokens: config.burst,
+    lastUpdate: now,
+  };
 
   const elapsed = now - bucket.lastUpdate;
   bucket.tokens = Math.min(config.burst, bucket.tokens + elapsed * refillRate);
@@ -111,20 +123,43 @@ export function rateLimitMiddleware() {
 
       const baseResult = await checkRateLimit(baseKey, DEFAULT_CHAT_LIMIT);
       if (!baseResult.allowed) {
-        rateLimitViolationsTotal.inc({ endpoint: req.path, key_type: "user", model: model ?? "default" });
+        rateLimitViolationsTotal.inc({
+          endpoint: req.path,
+          key_type: "user",
+          model: model ?? "default",
+        });
         res.setHeader("Retry-After", String(baseResult.retryAfter));
-        res.setHeader("X-RateLimit-Limit", String(DEFAULT_CHAT_LIMIT.maxRequests));
-        res.status(429).json({ error: "Rate limit exceeded. Try again later." });
+        res.setHeader(
+          "X-RateLimit-Limit",
+          String(DEFAULT_CHAT_LIMIT.maxRequests),
+        );
+        res
+          .status(429)
+          .json({ error: "Rate limit exceeded. Try again later." });
         return;
       }
 
       if (isExpensiveModel(model)) {
-        const modelResult = await checkRateLimit(modelKey, EXPENSIVE_MODEL_LIMIT);
+        const modelResult = await checkRateLimit(
+          modelKey,
+          EXPENSIVE_MODEL_LIMIT,
+        );
         if (!modelResult.allowed) {
-          rateLimitViolationsTotal.inc({ endpoint: req.path, key_type: "model", model });
+          rateLimitViolationsTotal.inc({
+            endpoint: req.path,
+            key_type: "model",
+            model,
+          });
           res.setHeader("Retry-After", String(modelResult.retryAfter));
-          res.setHeader("X-RateLimit-Limit", String(EXPENSIVE_MODEL_LIMIT.maxRequests));
-          res.status(429).json({ error: `Rate limit exceeded for model ${model}. Try again later.` });
+          res.setHeader(
+            "X-RateLimit-Limit",
+            String(EXPENSIVE_MODEL_LIMIT.maxRequests),
+          );
+          res
+            .status(429)
+            .json({
+              error: `Rate limit exceeded for model ${model}. Try again later.`,
+            });
           return;
         }
       }

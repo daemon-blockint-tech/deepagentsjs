@@ -15,7 +15,7 @@ vi.mock("./supabase.js", () => ({
       getUser: vi.fn(async (token: string) =>
         token.startsWith("valid-")
           ? { data: { user: { id: token.slice(6) } }, error: null }
-          : { data: { user: null }, error: new Error("invalid token") }
+          : { data: { user: null }, error: new Error("invalid token") },
       ),
     },
   })),
@@ -77,7 +77,10 @@ describe("POST /api/chat", () => {
     const res = await request(app)
       .post("/api/chat")
       .set("Authorization", "Bearer valid-chat-200")
-      .send({ messages: [{ role: "user", content: "hi" }], model: "openai/gpt-4o" });
+      .send({
+        messages: [{ role: "user", content: "hi" }],
+        model: "openai/gpt-4o",
+      });
 
     expect(res.status).toBe(200);
     expect(JSON.stringify(res.body)).toContain("Hello from test");
@@ -113,7 +116,10 @@ describe("POST /api/chat/stream", () => {
     const res = await request(app)
       .post("/api/chat/stream")
       .set("Authorization", "Bearer valid-stream-200")
-      .send({ messages: [{ role: "user", content: "hi" }], model: "openai/gpt-4o" });
+      .send({
+        messages: [{ role: "user", content: "hi" }],
+        model: "openai/gpt-4o",
+      });
 
     expect(res.status).toBe(200);
     expect(res.text).toContain('"content":"Hello "');

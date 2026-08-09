@@ -20,12 +20,25 @@ import { getSupabaseClient } from "./supabase.js";
 import { parseDocuments, type DocumentPayload } from "./udop.js";
 import { semanticQueryOntology } from "./semantic.js";
 import { approveAction, executeAction } from "./actions.js";
-import { evaluateAutomations, startAutomationScheduler } from "./automations.js";
+import {
+  evaluateAutomations,
+  startAutomationScheduler,
+} from "./automations.js";
 import { queryInterfaceObjects, executeInterfaceAction } from "./interfaces.js";
 import { queryObjectSet } from "./services/object-set.js";
-import { createObjectType, listObjectTypes, createInterface, listInterfaces } from "./services/metadata.js";
+import {
+  createObjectType,
+  listObjectTypes,
+  createInterface,
+  listInterfaces,
+} from "./services/metadata.js";
 import { uploadFile, downloadFile, deleteFile } from "./storage.js";
-import { createMediaSet, addMediaSetItem, getMediaSet, listMediaSets } from "./media-sets.js";
+import {
+  createMediaSet,
+  addMediaSetItem,
+  getMediaSet,
+  listMediaSets,
+} from "./media-sets.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -44,7 +57,7 @@ app.use("/api/chat", rateLimitMiddleware());
 function withDefaultUser(
   _req: Request,
   _res: Response,
-  next: NextFunction
+  next: NextFunction,
 ): void {
   runWithUserId(process.env.DEFAULT_USER_ID ?? null, next);
 }
@@ -58,7 +71,9 @@ app.get("/metrics", async (_req: Request, res: Response) => {
 
 function getErrorMessage(error: unknown): string {
   if (typeof error === "string") return error;
-  const err = error as { message?: unknown; toString?: () => string } | undefined;
+  const err = error as
+    | { message?: unknown; toString?: () => string }
+    | undefined;
   if (typeof err?.message === "string") return err.message;
   if (typeof err?.toString === "function") return err.toString();
   return "Unknown error";
@@ -69,9 +84,12 @@ if (!openRouterApiKey) {
   process.stderr.write("OPENROUTER_API_KEY is not set. /api/chat will fail.\n");
 }
 
-const langSmithEnabled = process.env.LANGSMITH_TRACING === "true" && !!process.env.LANGSMITH_API_KEY;
+const langSmithEnabled =
+  process.env.LANGSMITH_TRACING === "true" && !!process.env.LANGSMITH_API_KEY;
 if (langSmithEnabled) {
-  process.stdout.write(`LangSmith tracing enabled for project: ${process.env.LANGSMITH_PROJECT || "default"}\n`);
+  process.stdout.write(
+    `LangSmith tracing enabled for project: ${process.env.LANGSMITH_PROJECT || "default"}\n`,
+  );
 }
 
 interface ChatInput {
@@ -113,7 +131,11 @@ const chatBodySchema = z.object({
 function parseChatBody(body: unknown) {
   const result = chatBodySchema.safeParse(body);
   if (!result.success) {
-    throw new Error(result.error.errors.map((e) => `${e.path.join(".")}: ${e.message}`).join("; "));
+    throw new Error(
+      result.error.errors
+        .map((e) => `${e.path.join(".")}: ${e.message}`)
+        .join("; "),
+    );
   }
   return result.data;
 }
@@ -122,7 +144,7 @@ const ingest = traceable(
   async (
     messages: Array<{ role: string; content: string }>,
     documents: DocumentPayload[] | undefined,
-    model?: string
+    model?: string,
   ): Promise<ChatInput> => {
     const enriched = [...messages];
     if (documents && documents.length > 0) {
@@ -139,7 +161,7 @@ const ingest = traceable(
   {
     name: "ingest",
     run_type: "tool",
-  }
+  },
 );
 
 const retrieve = traceable(
@@ -186,7 +208,7 @@ const retrieve = traceable(
   {
     name: "retrieve",
     run_type: "retriever",
-  }
+  },
 );
 
 const generate = traceable(
@@ -198,14 +220,14 @@ const generate = traceable(
   {
     name: "generate",
     run_type: "llm",
-  }
+  },
 );
 
 const runChat = traceable(
   async (
     messages: Array<{ role: string; content: string }>,
     documents: DocumentPayload[] | undefined,
-    model?: string
+    model?: string,
   ) => {
     const input = await ingest(messages, documents, model);
     const ctx = await retrieve(input);
@@ -214,7 +236,7 @@ const runChat = traceable(
   {
     name: "clone_chat",
     run_type: "chain",
-  }
+  },
 );
 
 // Identity is derived from the caller's Supabase access token, never from a
@@ -261,7 +283,7 @@ app.post("/api/chat", async (req: Request, res: Response) => {
   try {
     const { messages, model, documents } = parseChatBody(req.body);
     const result = await runWithUserId(userId, () =>
-      runChat(messages, documents, model)
+      runChat(messages, documents, model),
     );
     return res.json(result);
   } catch (error) {
@@ -327,18 +349,21 @@ app.post("/api/chat/stream", async (req: Request, res: Response) => {
 app.post("/api/actions/:id/approve", async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { workspace_id, approved } = req.body as { workspace_id: string; approved: boolean };
+    const { workspace_id, approved } = req.body as {
+      workspace_id: string;
+      approved: boolean;
+    };
     if (!workspace_id) {
       return res.status(400).json({ error: "workspace_id is required" });
     }
-      const supabase = getSupabaseClient();
-      await approveAction(supabase, id, workspace_id, approved === true);
-      const result = await evaluateAutomations({
-        workspace_id: workspace_id,
-        trigger: approved ? "action_approved" : "action_rejected",
-        action_type: undefined,
-      });
-      return res.json({ ok: true, automation_ids: result });
+    const supabase = getSupabaseClient();
+    await approveAction(supabase, id, workspace_id, approved === true);
+    const result = await evaluateAutomations({
+      workspace_id: workspace_id,
+      trigger: approved ? "action_approved" : "action_rejected",
+      action_type: undefined,
+    });
+    return res.json({ ok: true, automation_ids: result });
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
   }
@@ -351,55 +376,76 @@ app.post("/api/actions/:id/execute", async (req: Request, res: Response) => {
     if (!workspace_id) {
       return res.status(400).json({ error: "workspace_id is required" });
     }
-      const supabase = getSupabaseClient();
-      await executeAction(supabase, id, workspace_id);
-      const result = await evaluateAutomations({
-        workspace_id: workspace_id,
-        trigger: "action_executed",
-      });
-      return res.json({ ok: true, automation_ids: result });
+    const supabase = getSupabaseClient();
+    await executeAction(supabase, id, workspace_id);
+    const result = await evaluateAutomations({
+      workspace_id: workspace_id,
+      trigger: "action_executed",
+    });
+    return res.json({ ok: true, automation_ids: result });
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
   }
 });
 
 // Interface routes
-app.get("/api/interfaces/:slug/objects", async (req: Request, res: Response) => {
-  try {
-    const { slug } = req.params;
-    const workspace_id = (req.query.workspace_id as string) || process.env.DEFAULT_WORKSPACE_ID || "";
-    const query = (req.query.query as string) || "";
-    const limit = Number(req.query.limit) || 10;
-      const objects = await queryInterfaceObjects(workspace_id, slug, query, limit);
+app.get(
+  "/api/interfaces/:slug/objects",
+  async (req: Request, res: Response) => {
+    try {
+      const { slug } = req.params;
+      const workspace_id =
+        (req.query.workspace_id as string) ||
+        process.env.DEFAULT_WORKSPACE_ID ||
+        "";
+      const query = (req.query.query as string) || "";
+      const limit = Number(req.query.limit) || 10;
+      const objects = await queryInterfaceObjects(
+        workspace_id,
+        slug,
+        query,
+        limit,
+      );
       return res.json({ objects });
-  } catch (error) {
-    return res.status(400).json({ error: getErrorMessage(error) });
-  }
-});
-
-app.post("/api/interfaces/:slug/actions", async (req: Request, res: Response) => {
-  try {
-    const { slug } = req.params;
-    const { workspace_id, type, payload } = req.body as {
-      workspace_id: string;
-      type: string;
-      payload: Record<string, unknown>;
-    };
-    if (!workspace_id || !type || !payload) {
-      return res.status(400).json({ error: "workspace_id, type, and payload are required" });
+    } catch (error) {
+      return res.status(400).json({ error: getErrorMessage(error) });
     }
-      const result = await executeInterfaceAction(workspace_id, slug, type, payload);
+  },
+);
+
+app.post(
+  "/api/interfaces/:slug/actions",
+  async (req: Request, res: Response) => {
+    try {
+      const { slug } = req.params;
+      const { workspace_id, type, payload } = req.body as {
+        workspace_id: string;
+        type: string;
+        payload: Record<string, unknown>;
+      };
+      if (!workspace_id || !type || !payload) {
+        return res
+          .status(400)
+          .json({ error: "workspace_id, type, and payload are required" });
+      }
+      const result = await executeInterfaceAction(
+        workspace_id,
+        slug,
+        type,
+        payload,
+      );
       return res.json(result);
-  } catch (error) {
-    return res.status(400).json({ error: getErrorMessage(error) });
-  }
-});
+    } catch (error) {
+      return res.status(400).json({ error: getErrorMessage(error) });
+    }
+  },
+);
 
 // Engine: ObjectSetService
 app.post("/api/object-sets/query", async (req: Request, res: Response) => {
   try {
-      const result = await queryObjectSet(req.body);
-      return res.json(result);
+    const result = await queryObjectSet(req.body);
+    return res.json(result);
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
   }
@@ -408,13 +454,13 @@ app.post("/api/object-sets/query", async (req: Request, res: Response) => {
 // Engine: MetadataService
 app.post("/api/metadata/object-types", async (req: Request, res: Response) => {
   try {
-      const { workspace_id, name, schema } = req.body as {
-        workspace_id: string;
-        name: string;
-        schema?: Record<string, unknown>;
-      };
-      const result = await createObjectType({ workspace_id, name, schema });
-      return res.json(result);
+    const { workspace_id, name, schema } = req.body as {
+      workspace_id: string;
+      name: string;
+      schema?: Record<string, unknown>;
+    };
+    const result = await createObjectType({ workspace_id, name, schema });
+    return res.json(result);
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
   }
@@ -422,9 +468,12 @@ app.post("/api/metadata/object-types", async (req: Request, res: Response) => {
 
 app.get("/api/metadata/object-types", async (req: Request, res: Response) => {
   try {
-      const workspace_id = (req.query.workspace_id as string) || process.env.DEFAULT_WORKSPACE_ID || "";
-      const result = await listObjectTypes(workspace_id);
-      return res.json({ types: result });
+    const workspace_id =
+      (req.query.workspace_id as string) ||
+      process.env.DEFAULT_WORKSPACE_ID ||
+      "";
+    const result = await listObjectTypes(workspace_id);
+    return res.json({ types: result });
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
   }
@@ -432,8 +481,8 @@ app.get("/api/metadata/object-types", async (req: Request, res: Response) => {
 
 app.post("/api/metadata/interfaces", async (req: Request, res: Response) => {
   try {
-      const result = await createInterface(req.body);
-      return res.json(result);
+    const result = await createInterface(req.body);
+    return res.json(result);
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
   }
@@ -441,9 +490,12 @@ app.post("/api/metadata/interfaces", async (req: Request, res: Response) => {
 
 app.get("/api/metadata/interfaces", async (req: Request, res: Response) => {
   try {
-      const workspace_id = (req.query.workspace_id as string) || process.env.DEFAULT_WORKSPACE_ID || "";
-      const result = await listInterfaces(workspace_id);
-      return res.json({ interfaces: result });
+    const workspace_id =
+      (req.query.workspace_id as string) ||
+      process.env.DEFAULT_WORKSPACE_ID ||
+      "";
+    const result = await listInterfaces(workspace_id);
+    return res.json({ interfaces: result });
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
   }
@@ -452,7 +504,8 @@ app.get("/api/metadata/interfaces", async (req: Request, res: Response) => {
 // Storage upload/download
 app.post("/api/upload", async (req: Request, res: Response) => {
   try {
-      const { workspace_id, type, file_name, mime_type, data, object_id } = req.body as {
+    const { workspace_id, type, file_name, mime_type, data, object_id } =
+      req.body as {
         workspace_id: string;
         type: "media" | "documents";
         file_name: string;
@@ -460,18 +513,23 @@ app.post("/api/upload", async (req: Request, res: Response) => {
         data: string;
         object_id?: string;
       };
-      if (!workspace_id || !type || !file_name || !mime_type || !data) {
-        return res.status(400).json({ error: "workspace_id, type, file_name, mime_type, and data are required" });
-      }
-      const result = await uploadFile({
-        workspace_id,
-        type,
-        file_name,
-        mime_type,
-        data,
-        object_id,
-      });
-      return res.json(result);
+    if (!workspace_id || !type || !file_name || !mime_type || !data) {
+      return res
+        .status(400)
+        .json({
+          error:
+            "workspace_id, type, file_name, mime_type, and data are required",
+        });
+    }
+    const result = await uploadFile({
+      workspace_id,
+      type,
+      file_name,
+      mime_type,
+      data,
+      object_id,
+    });
+    return res.json(result);
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
   }
@@ -479,9 +537,9 @@ app.post("/api/upload", async (req: Request, res: Response) => {
 
 app.get("/api/download/:id", async (req: Request, res: Response) => {
   try {
-      const type = (req.query.type as "media" | "documents") || "documents";
-      const result = await downloadFile({ type, id: req.params.id });
-      return res.json(result);
+    const type = (req.query.type as "media" | "documents") || "documents";
+    const result = await downloadFile({ type, id: req.params.id });
+    return res.json(result);
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
   }
@@ -489,9 +547,9 @@ app.get("/api/download/:id", async (req: Request, res: Response) => {
 
 app.delete("/api/files/:id", async (req: Request, res: Response) => {
   try {
-      const type = (req.query.type as "media" | "documents") || "documents";
-      await deleteFile(type, req.params.id);
-      return res.json({ ok: true });
+    const type = (req.query.type as "media" | "documents") || "documents";
+    await deleteFile(type, req.params.id);
+    return res.json({ ok: true });
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
   }
@@ -500,17 +558,24 @@ app.delete("/api/files/:id", async (req: Request, res: Response) => {
 // Media sets
 app.post("/api/media-sets", async (req: Request, res: Response) => {
   try {
-      const { workspace_id, name, description, metadata } = req.body as {
-        workspace_id: string;
-        name: string;
-        description?: string;
-        metadata?: Record<string, unknown>;
-      };
-      if (!workspace_id || !name) {
-        return res.status(400).json({ error: "workspace_id and name are required" });
-      }
-      const set = await createMediaSet({ workspace_id, name, description, metadata });
-      return res.json(set);
+    const { workspace_id, name, description, metadata } = req.body as {
+      workspace_id: string;
+      name: string;
+      description?: string;
+      metadata?: Record<string, unknown>;
+    };
+    if (!workspace_id || !name) {
+      return res
+        .status(400)
+        .json({ error: "workspace_id and name are required" });
+    }
+    const set = await createMediaSet({
+      workspace_id,
+      name,
+      description,
+      metadata,
+    });
+    return res.json(set);
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
   }
@@ -518,12 +583,12 @@ app.post("/api/media-sets", async (req: Request, res: Response) => {
 
 app.get("/api/media-sets", async (req: Request, res: Response) => {
   try {
-      const workspaceId = req.query.workspace_id as string;
-      if (!workspaceId) {
-        return res.status(400).json({ error: "workspace_id is required" });
-      }
-      const sets = await listMediaSets(workspaceId);
-      return res.json(sets);
+    const workspaceId = req.query.workspace_id as string;
+    if (!workspaceId) {
+      return res.status(400).json({ error: "workspace_id is required" });
+    }
+    const sets = await listMediaSets(workspaceId);
+    return res.json(sets);
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
   }
@@ -531,9 +596,9 @@ app.get("/api/media-sets", async (req: Request, res: Response) => {
 
 app.get("/api/media-sets/:id", async (req: Request, res: Response) => {
   try {
-      const set = await getMediaSet(req.params.id);
-      if (!set) return res.status(404).json({ error: "Media set not found" });
-      return res.json(set);
+    const set = await getMediaSet(req.params.id);
+    if (!set) return res.status(404).json({ error: "Media set not found" });
+    return res.json(set);
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
   }
@@ -541,12 +606,21 @@ app.get("/api/media-sets/:id", async (req: Request, res: Response) => {
 
 app.post("/api/media-sets/:id/items", async (req: Request, res: Response) => {
   try {
-      const { item_id, item_type } = req.body as { item_id: string; item_type: "media" | "document" };
-      if (!item_id || !item_type) {
-        return res.status(400).json({ error: "item_id and item_type are required" });
-      }
-      const item = await addMediaSetItem({ set_id: req.params.id, item_id, item_type });
-      return res.json(item);
+    const { item_id, item_type } = req.body as {
+      item_id: string;
+      item_type: "media" | "document";
+    };
+    if (!item_id || !item_type) {
+      return res
+        .status(400)
+        .json({ error: "item_id and item_type are required" });
+    }
+    const item = await addMediaSetItem({
+      set_id: req.params.id,
+      item_id,
+      item_type,
+    });
+    return res.json(item);
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
   }
@@ -562,4 +636,3 @@ if (process.env.NODE_ENV !== "test") {
 }
 
 export { app };
-
