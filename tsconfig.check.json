@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "files": [
+    "src/server.ts",
+    "src/agent.ts",
+    "src/tools.ts",
+    "src/supabase.ts",
+    "src/eval.ts"
+  ]
+}
