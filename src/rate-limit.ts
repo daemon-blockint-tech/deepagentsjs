@@ -1,4 +1,5 @@
 import process from "node:process";
+import { createHash } from "node:crypto";
 import { Redis } from "@upstash/redis";
 import { type Request, type Response, type NextFunction } from "express";
 import { rateLimitViolationsTotal } from "./metrics.js";
@@ -86,23 +87,27 @@ export async function checkRateLimit(
   return { allowed: false, retryAfter };
 }
 
-function getUserId(req: Request): string {
-  const fromHeader = req.headers["x-user-id"];
-  const fromBody = typeof req.body === "object" ? req.body?.user_id : undefined;
-  return typeof fromHeader === "string"
-    ? fromHeader
-    : typeof fromBody === "string"
-      ? fromBody
-      : req.ip ?? "anonymous";
+// Key buckets by a hash of the bearer token (one per authenticated session,
+// and not spoofable via a self-chosen header) or by client IP otherwise.
+// The raw token is never stored.
+function getRateLimitKey(req: Request): string {
+  const header = req.headers.authorization;
+  if (header?.startsWith("Bearer ")) {
+    const token = header.slice(7).trim();
+    if (token) {
+      return `token:${createHash("sha256").update(token).digest("hex")}`;
+    }
+  }
+  return `ip:${req.ip ?? "anonymous"}`;
 }
 
 export function rateLimitMiddleware() {
   return async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const userId = getUserId(req);
+      const key = getRateLimitKey(req);
       const model = typeof req.body === "object" ? req.body?.model : undefined;
-      const baseKey = `ratelimit:chat:${userId}`;
-      const modelKey = `ratelimit:model:${userId}:${model ?? "default"}`;
+      const baseKey = `ratelimit:chat:${key}`;
+      const modelKey = `ratelimit:model:${key}:${model ?? "default"}`;
 
       const baseResult = await checkRateLimit(baseKey, DEFAULT_CHAT_LIMIT);
       if (!baseResult.allowed) {

@@ -3,12 +3,17 @@ import process from "node:process";
 import dotenv from "dotenv";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import express, { type Express, type Request, type Response } from "express";
+import express, {
+  type Express,
+  type NextFunction,
+  type Request,
+  type Response,
+} from "express";
 import cors from "cors";
 import { z } from "zod";
 import { traceable } from "langsmith/traceable";
 import { getCloneAgent } from "./agent.js";
-import { getCurrentUserId, setCurrentUserId } from "./auth.js";
+import { getCurrentUserId, runWithUserId } from "./auth.js";
 import { register } from "./metrics.js";
 import { rateLimitMiddleware } from "./rate-limit.js";
 import { getSupabaseClient } from "./supabase.js";
@@ -33,6 +38,18 @@ const app: Express = express();
 app.use(cors({ origin: process.env.FRONTEND_URL || "http://localhost:3000" }));
 app.use(express.json({ limit: "50mb" }));
 app.use("/api/chat", rateLimitMiddleware());
+
+// Legacy engine routes use the configured service identity in an isolated async context.
+// User-facing chat routes override this with the authenticated request identity below.
+function withDefaultUser(
+  _req: Request,
+  _res: Response,
+  next: NextFunction
+): void {
+  runWithUserId(process.env.DEFAULT_USER_ID ?? null, next);
+}
+
+app.use("/api", withDefaultUser);
 
 app.get("/metrics", async (_req: Request, res: Response) => {
   res.setHeader("Content-Type", register.contentType);
@@ -128,12 +145,10 @@ const ingest = traceable(
 const retrieve = traceable(
   async (input: ChatInput): Promise<ChatContext> => {
     const workspaceId = process.env.DEFAULT_WORKSPACE_ID;
-    const userId = process.env.DEFAULT_USER_ID;
+    const userId = getCurrentUserId();
     if (!workspaceId || !userId) {
       return { ...input, context: "" };
     }
-
-    setCurrentUserId(userId);
 
     const userMessage = input.messages
       .filter((m) => m.role === "user")
@@ -192,23 +207,30 @@ const runChat = traceable(
     documents: DocumentPayload[] | undefined,
     model?: string
   ) => {
-    const previousUserId = getCurrentUserId();
-    setCurrentUserId(process.env.DEFAULT_USER_ID ?? null);
-
-    try {
-      const input = await ingest(messages, documents, model);
-      const ctx = await retrieve(input);
-      const result = await generate(ctx);
-      return result;
-    } finally {
-      setCurrentUserId(previousUserId);
-    }
+    const input = await ingest(messages, documents, model);
+    const ctx = await retrieve(input);
+    return generate(ctx);
   },
   {
     name: "clone_chat",
     run_type: "chain",
   }
 );
+
+// Identity is derived from the caller's Supabase access token, never from a
+// client-supplied user id header (which would be trivially spoofable).
+async function getAuthenticatedUserId(req: Request): Promise<string | null> {
+  const header = req.header("authorization");
+  const token = header?.startsWith("Bearer ") ? header.slice(7).trim() : null;
+  if (!token) return null;
+  try {
+    const { data, error } = await getSupabaseClient().auth.getUser(token);
+    if (error || !data.user) return null;
+    return data.user.id;
+  } catch {
+    return null;
+  }
+}
 
 function getLatestAiContent(chunk: AgentChunk) {
   const messages = chunk.messages;
@@ -233,9 +255,14 @@ app.get("/health", (_req: Request, res: Response) => {
 });
 
 app.post("/api/chat", async (req: Request, res: Response) => {
+  const userId = await getAuthenticatedUserId(req);
+  if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
   try {
     const { messages, model, documents } = parseChatBody(req.body);
-    const result = await runChat(messages, documents, model);
+    const result = await runWithUserId(userId, () =>
+      runChat(messages, documents, model)
+    );
     return res.json(result);
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
@@ -243,6 +270,9 @@ app.post("/api/chat", async (req: Request, res: Response) => {
 });
 
 app.post("/api/chat/stream", async (req: Request, res: Response) => {
+  const userId = await getAuthenticatedUserId(req);
+  if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
   let body: z.infer<typeof chatBodySchema>;
   try {
     body = parseChatBody(req.body);
@@ -258,27 +288,36 @@ app.post("/api/chat/stream", async (req: Request, res: Response) => {
   res.setHeader("X-Accel-Buffering", "no");
 
   let disconnected = false;
-  req.on("close", () => {
+  req.on("aborted", () => {
     disconnected = true;
+  });
+  res.on("close", () => {
+    if (!res.writableEnded) {
+      disconnected = true;
+    }
   });
 
   try {
-    const input = await ingest(messages, documents, model);
-    const ctx = await retrieve(input);
-    const activeAgent = await getCloneAgent(model);
-    const stream = await activeAgent.stream({ messages: ctx.messages });
+    await runWithUserId(userId, async () => {
+      const input = await ingest(messages, documents, model);
+      const ctx = await retrieve(input);
+      const activeAgent = await getCloneAgent(model);
+      const stream = await activeAgent.stream({ messages: ctx.messages });
 
-    for await (const chunk of stream) {
-      if (disconnected) break;
-      const content = getLatestAiContent(chunk as AgentChunk);
-      if (content) {
-        res.write(`data: ${JSON.stringify({ content })}\n\n`);
+      for await (const chunk of stream) {
+        if (disconnected) break;
+        const content = getLatestAiContent(chunk as AgentChunk);
+        if (content) {
+          res.write(`data: ${JSON.stringify({ content })}\n\n`);
+        }
       }
-    }
+    });
 
+    if (disconnected || res.writableEnded) return;
     res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
     return res.end();
   } catch (error) {
+    if (disconnected || res.writableEnded) return;
     res.write(`data: ${JSON.stringify({ error: getErrorMessage(error) })}\n\n`);
     return res.end();
   }
@@ -292,9 +331,6 @@ app.post("/api/actions/:id/approve", async (req: Request, res: Response) => {
     if (!workspace_id) {
       return res.status(400).json({ error: "workspace_id is required" });
     }
-    const previousUserId = getCurrentUserId();
-    setCurrentUserId(process.env.DEFAULT_USER_ID ?? null);
-    try {
       const supabase = getSupabaseClient();
       await approveAction(supabase, id, workspace_id, approved === true);
       const result = await evaluateAutomations({
@@ -303,9 +339,6 @@ app.post("/api/actions/:id/approve", async (req: Request, res: Response) => {
         action_type: undefined,
       });
       return res.json({ ok: true, automation_ids: result });
-    } finally {
-      setCurrentUserId(previousUserId);
-    }
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
   }
@@ -318,9 +351,6 @@ app.post("/api/actions/:id/execute", async (req: Request, res: Response) => {
     if (!workspace_id) {
       return res.status(400).json({ error: "workspace_id is required" });
     }
-    const previousUserId = getCurrentUserId();
-    setCurrentUserId(process.env.DEFAULT_USER_ID ?? null);
-    try {
       const supabase = getSupabaseClient();
       await executeAction(supabase, id, workspace_id);
       const result = await evaluateAutomations({
@@ -328,9 +358,6 @@ app.post("/api/actions/:id/execute", async (req: Request, res: Response) => {
         trigger: "action_executed",
       });
       return res.json({ ok: true, automation_ids: result });
-    } finally {
-      setCurrentUserId(previousUserId);
-    }
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
   }
@@ -343,14 +370,8 @@ app.get("/api/interfaces/:slug/objects", async (req: Request, res: Response) => 
     const workspace_id = (req.query.workspace_id as string) || process.env.DEFAULT_WORKSPACE_ID || "";
     const query = (req.query.query as string) || "";
     const limit = Number(req.query.limit) || 10;
-    const previousUserId = getCurrentUserId();
-    setCurrentUserId(process.env.DEFAULT_USER_ID ?? null);
-    try {
       const objects = await queryInterfaceObjects(workspace_id, slug, query, limit);
       return res.json({ objects });
-    } finally {
-      setCurrentUserId(previousUserId);
-    }
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
   }
@@ -367,14 +388,8 @@ app.post("/api/interfaces/:slug/actions", async (req: Request, res: Response) =>
     if (!workspace_id || !type || !payload) {
       return res.status(400).json({ error: "workspace_id, type, and payload are required" });
     }
-    const previousUserId = getCurrentUserId();
-    setCurrentUserId(process.env.DEFAULT_USER_ID ?? null);
-    try {
       const result = await executeInterfaceAction(workspace_id, slug, type, payload);
       return res.json(result);
-    } finally {
-      setCurrentUserId(previousUserId);
-    }
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
   }
@@ -383,14 +398,8 @@ app.post("/api/interfaces/:slug/actions", async (req: Request, res: Response) =>
 // Engine: ObjectSetService
 app.post("/api/object-sets/query", async (req: Request, res: Response) => {
   try {
-    const previousUserId = getCurrentUserId();
-    setCurrentUserId(process.env.DEFAULT_USER_ID ?? null);
-    try {
       const result = await queryObjectSet(req.body);
       return res.json(result);
-    } finally {
-      setCurrentUserId(previousUserId);
-    }
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
   }
@@ -399,9 +408,6 @@ app.post("/api/object-sets/query", async (req: Request, res: Response) => {
 // Engine: MetadataService
 app.post("/api/metadata/object-types", async (req: Request, res: Response) => {
   try {
-    const previousUserId = getCurrentUserId();
-    setCurrentUserId(process.env.DEFAULT_USER_ID ?? null);
-    try {
       const { workspace_id, name, schema } = req.body as {
         workspace_id: string;
         name: string;
@@ -409,9 +415,6 @@ app.post("/api/metadata/object-types", async (req: Request, res: Response) => {
       };
       const result = await createObjectType({ workspace_id, name, schema });
       return res.json(result);
-    } finally {
-      setCurrentUserId(previousUserId);
-    }
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
   }
@@ -419,15 +422,9 @@ app.post("/api/metadata/object-types", async (req: Request, res: Response) => {
 
 app.get("/api/metadata/object-types", async (req: Request, res: Response) => {
   try {
-    const previousUserId = getCurrentUserId();
-    setCurrentUserId(process.env.DEFAULT_USER_ID ?? null);
-    try {
       const workspace_id = (req.query.workspace_id as string) || process.env.DEFAULT_WORKSPACE_ID || "";
       const result = await listObjectTypes(workspace_id);
       return res.json({ types: result });
-    } finally {
-      setCurrentUserId(previousUserId);
-    }
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
   }
@@ -435,14 +432,8 @@ app.get("/api/metadata/object-types", async (req: Request, res: Response) => {
 
 app.post("/api/metadata/interfaces", async (req: Request, res: Response) => {
   try {
-    const previousUserId = getCurrentUserId();
-    setCurrentUserId(process.env.DEFAULT_USER_ID ?? null);
-    try {
       const result = await createInterface(req.body);
       return res.json(result);
-    } finally {
-      setCurrentUserId(previousUserId);
-    }
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
   }
@@ -450,15 +441,9 @@ app.post("/api/metadata/interfaces", async (req: Request, res: Response) => {
 
 app.get("/api/metadata/interfaces", async (req: Request, res: Response) => {
   try {
-    const previousUserId = getCurrentUserId();
-    setCurrentUserId(process.env.DEFAULT_USER_ID ?? null);
-    try {
       const workspace_id = (req.query.workspace_id as string) || process.env.DEFAULT_WORKSPACE_ID || "";
       const result = await listInterfaces(workspace_id);
       return res.json({ interfaces: result });
-    } finally {
-      setCurrentUserId(previousUserId);
-    }
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
   }
@@ -467,9 +452,6 @@ app.get("/api/metadata/interfaces", async (req: Request, res: Response) => {
 // Storage upload/download
 app.post("/api/upload", async (req: Request, res: Response) => {
   try {
-    const previousUserId = getCurrentUserId();
-    setCurrentUserId(process.env.DEFAULT_USER_ID ?? null);
-    try {
       const { workspace_id, type, file_name, mime_type, data, object_id } = req.body as {
         workspace_id: string;
         type: "media" | "documents";
@@ -490,9 +472,6 @@ app.post("/api/upload", async (req: Request, res: Response) => {
         object_id,
       });
       return res.json(result);
-    } finally {
-      setCurrentUserId(previousUserId);
-    }
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
   }
@@ -500,15 +479,9 @@ app.post("/api/upload", async (req: Request, res: Response) => {
 
 app.get("/api/download/:id", async (req: Request, res: Response) => {
   try {
-    const previousUserId = getCurrentUserId();
-    setCurrentUserId(process.env.DEFAULT_USER_ID ?? null);
-    try {
       const type = (req.query.type as "media" | "documents") || "documents";
       const result = await downloadFile({ type, id: req.params.id });
       return res.json(result);
-    } finally {
-      setCurrentUserId(previousUserId);
-    }
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
   }
@@ -516,15 +489,9 @@ app.get("/api/download/:id", async (req: Request, res: Response) => {
 
 app.delete("/api/files/:id", async (req: Request, res: Response) => {
   try {
-    const previousUserId = getCurrentUserId();
-    setCurrentUserId(process.env.DEFAULT_USER_ID ?? null);
-    try {
       const type = (req.query.type as "media" | "documents") || "documents";
       await deleteFile(type, req.params.id);
       return res.json({ ok: true });
-    } finally {
-      setCurrentUserId(previousUserId);
-    }
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
   }
@@ -533,9 +500,6 @@ app.delete("/api/files/:id", async (req: Request, res: Response) => {
 // Media sets
 app.post("/api/media-sets", async (req: Request, res: Response) => {
   try {
-    const previousUserId = getCurrentUserId();
-    setCurrentUserId(process.env.DEFAULT_USER_ID ?? null);
-    try {
       const { workspace_id, name, description, metadata } = req.body as {
         workspace_id: string;
         name: string;
@@ -547,9 +511,6 @@ app.post("/api/media-sets", async (req: Request, res: Response) => {
       }
       const set = await createMediaSet({ workspace_id, name, description, metadata });
       return res.json(set);
-    } finally {
-      setCurrentUserId(previousUserId);
-    }
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
   }
@@ -557,18 +518,12 @@ app.post("/api/media-sets", async (req: Request, res: Response) => {
 
 app.get("/api/media-sets", async (req: Request, res: Response) => {
   try {
-    const previousUserId = getCurrentUserId();
-    setCurrentUserId(process.env.DEFAULT_USER_ID ?? null);
-    try {
       const workspaceId = req.query.workspace_id as string;
       if (!workspaceId) {
         return res.status(400).json({ error: "workspace_id is required" });
       }
       const sets = await listMediaSets(workspaceId);
       return res.json(sets);
-    } finally {
-      setCurrentUserId(previousUserId);
-    }
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
   }
@@ -576,15 +531,9 @@ app.get("/api/media-sets", async (req: Request, res: Response) => {
 
 app.get("/api/media-sets/:id", async (req: Request, res: Response) => {
   try {
-    const previousUserId = getCurrentUserId();
-    setCurrentUserId(process.env.DEFAULT_USER_ID ?? null);
-    try {
       const set = await getMediaSet(req.params.id);
       if (!set) return res.status(404).json({ error: "Media set not found" });
       return res.json(set);
-    } finally {
-      setCurrentUserId(previousUserId);
-    }
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
   }
@@ -592,18 +541,12 @@ app.get("/api/media-sets/:id", async (req: Request, res: Response) => {
 
 app.post("/api/media-sets/:id/items", async (req: Request, res: Response) => {
   try {
-    const previousUserId = getCurrentUserId();
-    setCurrentUserId(process.env.DEFAULT_USER_ID ?? null);
-    try {
       const { item_id, item_type } = req.body as { item_id: string; item_type: "media" | "document" };
       if (!item_id || !item_type) {
         return res.status(400).json({ error: "item_id and item_type are required" });
       }
       const item = await addMediaSetItem({ set_id: req.params.id, item_id, item_type });
       return res.json(item);
-    } finally {
-      setCurrentUserId(previousUserId);
-    }
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
   }
