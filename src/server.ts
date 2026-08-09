@@ -514,12 +514,10 @@ app.post("/api/upload", async (req: Request, res: Response) => {
         object_id?: string;
       };
     if (!workspace_id || !type || !file_name || !mime_type || !data) {
-      return res
-        .status(400)
-        .json({
-          error:
-            "workspace_id, type, file_name, mime_type, and data are required",
-        });
+      return res.status(400).json({
+        error:
+          "workspace_id, type, file_name, mime_type, and data are required",
+      });
     }
     const result = await uploadFile({
       workspace_id,

@@ -155,11 +155,9 @@ export function rateLimitMiddleware() {
             "X-RateLimit-Limit",
             String(EXPENSIVE_MODEL_LIMIT.maxRequests),
           );
-          res
-            .status(429)
-            .json({
-              error: `Rate limit exceeded for model ${model}. Try again later.`,
-            });
+          res.status(429).json({
+            error: `Rate limit exceeded for model ${model}. Try again later.`,
+          });
           return;
         }
       }
