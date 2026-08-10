@@ -61,11 +61,9 @@ import { ingestDataTool } from "./ingest-tool.js"
 import { queryInterfaceTool, proposeInterfaceActionTool } from "./interface-tools.js"
 import { queryDecisionPatternsTool } from "./decision-pattern-tool.js"
 import {
-  delegationTools,
   setAgentRegistry,
 } from "./delegation-tools.js"
 import {
-  dynamicSpecialistTools,
   setSharedInfra,
   setHardcodedRegistry,
 } from "./dynamic-specialist.js"
@@ -240,25 +238,23 @@ function createPricingAgent(model: string): Agent {
 /**
  * Orchestrator — the primary digital worker.
  *
- * Decomposes complex requests into sub-tasks, delegates to specialists
- * via delegation tools, collects results, and synthesizes responses.
- * Also has direct read-only tools for simple queries (short-circuit).
+ * In the workflow-driven architecture, the orchestrator is only used for
+ * direct responses (greetings, follow-ups, simple lookups). Complex task
+ * routing is handled by the workflow engine (workflow-router.ts + control-gates.ts),
+ * which invokes specialists directly — not through the orchestrator.
  *
- * In addition to the 5 hardcoded specialists, the orchestrator can
- * create new specialists on-the-fly via create_specialist + delegate_to_specialist.
+ * The orchestrator retains read-only tools for simple queries.
+ * Delegation tools and dynamic specialist creation are no longer needed
+ * here because the workflow executor calls specialists directly.
  */
 function createOrchestratorAgent(model: string): Agent {
   return createDeepAgent({
     model: createModel(model),
-    // Orchestrator gets:
-    // - Direct read tools (for simple queries)
-    // - Hardcoded delegation tools (delegate_research, delegate_writing, etc.)
-    // - Dynamic specialist tools (create_specialist, delegate_to_specialist)
+    // Orchestrator only gets direct read tools — no delegation tools.
+    // The workflow executor calls specialists directly, bypassing the orchestrator.
     tools: [
       queryOntologyTool,
       semanticSearchTool,
-      ...delegationTools,
-      ...dynamicSpecialistTools,
     ],
     systemPrompt: loadPrompt("orchestrator"),
     backend,

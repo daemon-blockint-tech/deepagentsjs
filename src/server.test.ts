@@ -1,22 +1,9 @@
-import { describe, it, expect, beforeAll, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeAll, vi } from "vitest";
 import request from "supertest";
 import type { Express } from "express";
-import * as agent from "./agent.js";
 
-type CloneAgent = ReturnType<typeof agent.getCloneAgent>;
-
-vi.mock("./agent.js", () => ({
-  getCloneAgent: vi.fn(),
-  threadConfig: vi.fn((threadId: string) => ({
-    configurable: { thread_id: threadId },
-  })),
-  // Default to "nothing pending" so existing tests exercise the normal path;
-  // the HITL cases below override these per test.
-  extractInterrupt: vi.fn(() => null),
-  getPendingApproval: vi.fn(async () => null),
-  resumeAgent: vi.fn(),
-  DEFAULT_MODEL: "openai/gpt-4o",
-}));
+process.env.NODE_ENV = "test";
+process.env.OPENROUTER_API_KEY = "test-key";
 
 vi.mock("./supabase.js", () => ({
   getSupabaseClient: vi.fn(() => ({
@@ -30,10 +17,7 @@ vi.mock("./supabase.js", () => ({
   })),
 }));
 
-process.env.NODE_ENV = "test";
-process.env.OPENROUTER_API_KEY = "test-key";
-
-describe("POST /api/chat", () => {
+describe("GET /health", () => {
   let app: Express;
 
   beforeAll(async () => {
@@ -41,223 +25,97 @@ describe("POST /api/chat", () => {
     app = expressApp;
   });
 
-  it("rejects requests without an access token", async () => {
-    const res = await request(app)
-      .post("/api/chat")
-      .send({ messages: [{ role: "user", content: "hi" }] });
-
-    expect(res.status).toBe(401);
-  });
-
-  it("rejects requests with an invalid access token", async () => {
-    const res = await request(app)
-      .post("/api/chat")
-      .set("Authorization", "Bearer wrong-token")
-      .send({ messages: [{ role: "user", content: "hi" }] });
-
-    expect(res.status).toBe(401);
-  });
-
-  it("does not trust a client-supplied user id header", async () => {
-    const res = await request(app)
-      .post("/api/chat")
-      .set("X-User-Id", "someone-else")
-      .send({ messages: [{ role: "user", content: "hi" }] });
-
-    expect(res.status).toBe(401);
-  });
-
-  it("returns 400 for invalid messages", async () => {
-    const res = await request(app)
-      .post("/api/chat")
-      .set("Authorization", "Bearer valid-chat-400")
-      .send({ messages: "not-an-array", model: "openai/gpt-4o" });
-
-    expect(res.status).toBe(400);
-  });
-
-  it("returns 200 with mocked OpenRouter response", async () => {
-    vi.mocked(agent.getCloneAgent).mockReturnValue({
-      invoke: vi.fn().mockResolvedValue({
-        messages: [{ _getType: () => "ai", content: "Hello from test" }],
-      }),
-    } as unknown as CloneAgent);
-
-    const res = await request(app)
-      .post("/api/chat")
-      .set("Authorization", "Bearer valid-chat-200")
-      .send({
-        messages: [{ role: "user", content: "hi" }],
-        model: "openai/gpt-4o",
-      });
+  it("returns 200 with config status", async () => {
+    const res = await request(app).get("/health");
 
     expect(res.status).toBe(200);
-    expect(JSON.stringify(res.body)).toContain("Hello from test");
+    expect(res.body.ok).toBe(true);
+    expect(res.body.openrouter_configured).toBe(true);
   });
 });
 
-describe("POST /api/chat/stream", () => {
+describe("LangSmith webhook handler", () => {
   let app: Express;
 
   beforeAll(async () => {
+    process.env.LANGSMITH_WEBHOOK_SECRET = "test-secret";
     const { app: expressApp } = await import("./server.js");
     app = expressApp;
   });
 
-  it("rejects streaming requests without an access token", async () => {
-    const res = await request(app)
-      .post("/api/chat/stream")
-      .send({ messages: [{ role: "user", content: "hi" }] });
-
-    expect(res.status).toBe(401);
-  });
-
-  it("returns 200 and closes stream", async () => {
-    async function* mockStream() {
-      yield { messages: [{ _getType: () => "ai", content: "Hello " }] };
-      yield { messages: [{ _getType: () => "ai", content: "stream" }] };
-    }
-
-    vi.mocked(agent.getCloneAgent).mockReturnValue({
-      stream: vi.fn().mockReturnValue(mockStream()),
-    } as unknown as CloneAgent);
-
-    const res = await request(app)
-      .post("/api/chat/stream")
-      .set("Authorization", "Bearer valid-stream-200")
-      .send({
-        messages: [{ role: "user", content: "hi" }],
-        model: "openai/gpt-4o",
-      });
-
-    expect(res.status).toBe(200);
-    expect(res.text).toContain('"content":"Hello "');
-    expect(res.text).toContain('"content":"stream"');
-    expect(res.text).toContain('"done":true');
-  });
-
-  describe("human-in-the-loop", () => {
-    // Without this, call assertions below would pass simply because an earlier
-    // test had not reached resumeAgent yet.
-    beforeEach(() => {
-      vi.clearAllMocks();
-      vi.mocked(agent.extractInterrupt).mockReturnValue(null);
-      vi.mocked(agent.getPendingApproval).mockResolvedValue(null);
-    });
-
-    const pending = {
-      status: "interrupt" as const,
-      thread_id: "thread-hitl",
-      model: "openai/gpt-4o",
-      action_requests: [{ name: "run_shell", args: { command: "node -e 1" } }],
-      review_configs: [
-        {
-          actionName: "run_shell",
-          allowedDecisions: ["approve", "reject"] as Array<
-            "approve" | "edit" | "reject"
-          >,
-        },
-      ],
-    };
-
-    it("returns the approval request instead of an answer when a run parks", async () => {
-      vi.mocked(agent.getCloneAgent).mockReturnValue({
-        invoke: vi.fn().mockResolvedValue({ messages: [] }),
-      } as unknown as CloneAgent);
-      vi.mocked(agent.extractInterrupt).mockReturnValue(pending);
-
-      const res = await request(app)
-        .post("/api/chat")
-        .set("Authorization", "Bearer valid-hitl-1")
-        .send({ messages: [{ role: "user", content: "run something" }] });
+  describe("GET /api/langsmith/webhook (health check)", () => {
+    it("returns 200 with config status", async () => {
+      const res = await request(app).get("/api/langsmith/webhook");
 
       expect(res.status).toBe(200);
-      expect(res.body.status).toBe("interrupt");
-      expect(res.body.thread_id).toBe("thread-hitl");
-      expect(res.body.action_requests[0].name).toBe("run_shell");
+      expect(res.body.status).toBe("ok");
+      expect(res.body.secret_configured).toBe(true);
     });
+  });
 
-    it("requires auth to resume", async () => {
+  describe("POST /api/langsmith/webhook", () => {
+    it("rejects requests without a secret", async () => {
       const res = await request(app)
-        .post("/api/chat/resume")
-        .send({ thread_id: "thread-hitl", decisions: [{ type: "approve" }] });
+        .post("/api/langsmith/webhook")
+        .send({ rule_id: "test", runs: [] });
 
       expect(res.status).toBe(401);
     });
 
-    it("rejects a decision type the JS middleware cannot handle", async () => {
+    it("rejects requests with an invalid secret", async () => {
       const res = await request(app)
-        .post("/api/chat/resume")
-        .set("Authorization", "Bearer valid-hitl-2")
-        // "respond" exists in the Python API only.
-        .send({ thread_id: "thread-hitl", decisions: [{ type: "respond" }] });
+        .post("/api/langsmith/webhook")
+        .set("X-Webhook-Secret", "wrong-secret")
+        .send({ rule_id: "test", runs: [] });
+
+      expect(res.status).toBe(401);
+    });
+
+    it("rejects requests with wrong-length secret (timing-safe)", async () => {
+      const res = await request(app)
+        .post("/api/langsmith/webhook")
+        .set("X-Webhook-Secret", "short")
+        .send({ rule_id: "test", runs: [] });
+
+      expect(res.status).toBe(401);
+    });
+
+    it("returns 400 for invalid payload format", async () => {
+      const res = await request(app)
+        .post("/api/langsmith/webhook")
+        .set("X-Webhook-Secret", "test-secret")
+        .send({ not_a_valid: "payload" });
 
       expect(res.status).toBe(400);
     });
 
-    it("refuses to resume a thread that is not parked", async () => {
-      vi.mocked(agent.getPendingApproval).mockResolvedValue(null);
-
+    it("accepts a valid payload with unknown rule_id and logs it", async () => {
       const res = await request(app)
-        .post("/api/chat/resume")
-        .set("Authorization", "Bearer valid-hitl-3")
-        .send({ thread_id: "unknown-thread", decisions: [{ type: "approve" }] });
-
-      // Resuming an unknown id would otherwise run the tool with no approval.
-      expect(res.status).toBe(409);
-      expect(agent.resumeAgent).not.toHaveBeenCalled();
-    });
-
-    it("refuses when the decision count does not match the pending actions", async () => {
-      vi.mocked(agent.getPendingApproval).mockResolvedValue(pending);
-
-      const res = await request(app)
-        .post("/api/chat/resume")
-        .set("Authorization", "Bearer valid-hitl-4")
+        .post("/api/langsmith/webhook")
+        .set("X-Webhook-Secret", "test-secret")
         .send({
-          thread_id: "thread-hitl",
-          decisions: [{ type: "approve" }, { type: "approve" }],
+          rule_id: "unknown_rule",
+          start_time: "2024-01-01T00:00:00Z",
+          end_time: "2024-01-01T00:01:00Z",
+          runs: [
+            {
+              id: "run-1",
+              trace_id: "trace-1",
+              status: "success",
+              run_type: "llm",
+              name: "test",
+              start_time: "2024-01-01T00:00:00Z",
+              end_time: "2024-01-01T00:00:30Z",
+              inputs: { messages: [{ role: "user", content: "hi" }] },
+              outputs: {},
+            },
+          ],
         });
 
-      expect(res.status).toBe(400);
-      expect(agent.resumeAgent).not.toHaveBeenCalled();
-    });
-
-    it("resumes a parked thread and returns the finished result", async () => {
-      vi.mocked(agent.getPendingApproval).mockResolvedValue(pending);
-      vi.mocked(agent.resumeAgent).mockResolvedValue({
-        result: { messages: [{ content: "done" }] },
-        interrupt: null,
-      });
-
-      const res = await request(app)
-        .post("/api/chat/resume")
-        .set("Authorization", "Bearer valid-hitl-5")
-        .send({ thread_id: "thread-hitl", decisions: [{ type: "approve" }] });
-
       expect(res.status).toBe(200);
-      expect(res.body.messages[0].content).toBe("done");
-      expect(agent.resumeAgent).toHaveBeenCalledWith(
-        "thread-hitl",
-        [{ type: "approve" }],
-        undefined,
-      );
-    });
-
-    it("returns the next approval when the agent parks again", async () => {
-      vi.mocked(agent.getPendingApproval).mockResolvedValue(pending);
-      vi.mocked(agent.resumeAgent).mockResolvedValue({
-        result: { messages: [] },
-        interrupt: { ...pending, thread_id: "thread-hitl" },
-      });
-
-      const res = await request(app)
-        .post("/api/chat/resume")
-        .set("Authorization", "Bearer valid-hitl-6")
-        .send({ thread_id: "thread-hitl", decisions: [{ type: "reject" }] });
-
-      expect(res.status).toBe(200);
-      expect(res.body.status).toBe("interrupt");
+      expect(res.body.ok).toBe(true);
+      expect(res.body.processed).toBe(1);
+      expect(res.body.details[0].action).toBe("logged_only");
     });
   });
 });

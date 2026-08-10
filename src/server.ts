@@ -10,10 +10,8 @@ import express, {
   type Response,
 } from "express";
 import cors from "cors";
-import { z } from "zod";
-import { getCurrentUserId, runWithUserId } from "./auth.js";
+import { runWithUserId } from "./auth.js";
 import { register } from "./metrics.js";
-import { rateLimitMiddleware } from "./rate-limit.js";
 import { getSupabaseClient } from "./supabase.js";
 import { approveAction, executeAction } from "./actions.js";
 import {
@@ -34,13 +32,13 @@ import {
   listInterfaces,
 } from "./services/metadata.js";
 import { uploadFile, downloadFile, deleteFile } from "./storage.js";
-import { listThreadFiles, readThreadFile } from "./thread-files.js";
 import {
   createMediaSet,
   addMediaSetItem,
   getMediaSet,
   listMediaSets,
 } from "./media-sets.js";
+import { langsmithWebhookRouter } from "./langsmith-webhook.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -52,7 +50,6 @@ dotenv.config({ path: path.resolve(__dirname, "../.env.local") });
 const app: Express = express();
 app.use(cors({ origin: process.env.FRONTEND_URL || "http://localhost:3000" }));
 app.use(express.json({ limit: "50mb" }));
-app.use("/api/chat", rateLimitMiddleware());
 
 // Legacy engine routes use the configured service identity in an isolated async context.
 // User-facing chat routes override this with the authenticated request identity below.
@@ -65,6 +62,9 @@ function withDefaultUser(
 }
 
 app.use("/api", withDefaultUser);
+
+// LangSmith webhook handler — bypasses user auth (uses its own secret-based auth)
+app.use("/api/langsmith", langsmithWebhookRouter);
 
 app.get("/metrics", async (_req: Request, res: Response) => {
   res.setHeader("Content-Type", register.contentType);
@@ -81,9 +81,21 @@ function getErrorMessage(error: unknown): string {
   return "Unknown error";
 }
 
+/**
+ * Coerce an Express query/param value (string | string[] | undefined) to a string.
+ * Takes the first element if it's an array.
+ */
+function queryStr(val: unknown): string {
+  if (typeof val === "string") return val;
+  if (Array.isArray(val) && val.length > 0) return String(val[0]);
+  return "";
+}
+
 const openRouterApiKey = process.env.OPENROUTER_API_KEY;
 if (!openRouterApiKey) {
-  process.stderr.write("OPENROUTER_API_KEY is not set. /api/chat will fail.\n");
+  process.stderr.write(
+    "OPENROUTER_API_KEY is not set. The LangGraph Agent Server (port 2024) will fail to call LLMs.\n",
+  );
 }
 
 const langSmithEnabled =
@@ -92,31 +104,6 @@ if (langSmithEnabled) {
   process.stdout.write(
     `LangSmith tracing enabled for project: ${process.env.LANGSMITH_PROJECT || "default"}\n`,
   );
-}
-
-function getErrorMessage(error: unknown): string {
-  if (typeof error === "string") return error;
-  const err = error as
-    | { message?: unknown; toString?: () => string }
-    | undefined;
-  if (typeof err?.message === "string") return err.message;
-  if (typeof err?.toString === "function") return err.toString();
-  return "Unknown error";
-}
-
-// Identity is derived from the caller's Supabase access token, never from a
-// client-supplied user id header (which would be trivially spoofable).
-async function getAuthenticatedUserId(req: Request): Promise<string | null> {
-  const header = req.header("authorization");
-  const token = header?.startsWith("Bearer ") ? header.slice(7).trim() : null;
-  if (!token) return null;
-  try {
-    const { data, error } = await getSupabaseClient().auth.getUser(token);
-    if (error || !data.user) return null;
-    return data.user.id;
-  } catch {
-    return null;
-  }
 }
 
 app.get("/health", (_req: Request, res: Response) => {
@@ -137,7 +124,7 @@ app.get("/health", (_req: Request, res: Response) => {
 // Action lifecycle routes
 app.post("/api/actions/:id/approve", async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const id = queryStr(req.params.id);
     const { workspace_id, approved } = req.body as {
       workspace_id: string;
       approved: boolean;
@@ -160,7 +147,7 @@ app.post("/api/actions/:id/approve", async (req: Request, res: Response) => {
 
 app.post("/api/actions/:id/execute", async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const id = queryStr(req.params.id);
     const { workspace_id } = req.body as { workspace_id: string };
     if (!workspace_id) {
       return res.status(400).json({ error: "workspace_id is required" });
@@ -182,12 +169,12 @@ app.get(
   "/api/interfaces/:slug/objects",
   async (req: Request, res: Response) => {
     try {
-      const { slug } = req.params;
+      const slug = queryStr(req.params.slug);
       const workspace_id =
-        (req.query.workspace_id as string) ||
+        queryStr(req.query.workspace_id) ||
         process.env.DEFAULT_WORKSPACE_ID ||
         "";
-      const query = (req.query.query as string) || "";
+      const query = queryStr(req.query.query) || "";
       const limit = Number(req.query.limit) || 10;
       const objects = await queryInterfaceObjects(
         workspace_id,
@@ -206,7 +193,7 @@ app.post(
   "/api/interfaces/:slug/actions",
   async (req: Request, res: Response) => {
     try {
-      const { slug } = req.params;
+      const slug = queryStr(req.params.slug);
       const { workspace_id, type, payload } = req.body as {
         workspace_id: string;
         type: string;
@@ -258,7 +245,7 @@ app.post("/api/metadata/object-types", async (req: Request, res: Response) => {
 app.get("/api/metadata/object-types", async (req: Request, res: Response) => {
   try {
     const workspace_id =
-      (req.query.workspace_id as string) ||
+      queryStr(req.query.workspace_id) ||
       process.env.DEFAULT_WORKSPACE_ID ||
       "";
     const result = await listObjectTypes(workspace_id);
@@ -280,7 +267,7 @@ app.post("/api/metadata/interfaces", async (req: Request, res: Response) => {
 app.get("/api/metadata/interfaces", async (req: Request, res: Response) => {
   try {
     const workspace_id =
-      (req.query.workspace_id as string) ||
+      queryStr(req.query.workspace_id) ||
       process.env.DEFAULT_WORKSPACE_ID ||
       "";
     const result = await listInterfaces(workspace_id);
@@ -324,8 +311,9 @@ app.post("/api/upload", async (req: Request, res: Response) => {
 
 app.get("/api/download/:id", async (req: Request, res: Response) => {
   try {
-    const type = (req.query.type as "media" | "documents") || "documents";
-    const result = await downloadFile({ type, id: req.params.id });
+    const type =
+      (queryStr(req.query.type) as "media" | "documents") || "documents";
+    const result = await downloadFile({ type, id: queryStr(req.params.id) });
     return res.json(result);
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
@@ -334,8 +322,9 @@ app.get("/api/download/:id", async (req: Request, res: Response) => {
 
 app.delete("/api/files/:id", async (req: Request, res: Response) => {
   try {
-    const type = (req.query.type as "media" | "documents") || "documents";
-    await deleteFile(type, req.params.id);
+    const type =
+      (queryStr(req.query.type) as "media" | "documents") || "documents";
+    await deleteFile(type, queryStr(req.params.id));
     return res.json({ ok: true });
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
@@ -370,7 +359,7 @@ app.post("/api/media-sets", async (req: Request, res: Response) => {
 
 app.get("/api/media-sets", async (req: Request, res: Response) => {
   try {
-    const workspaceId = req.query.workspace_id as string;
+    const workspaceId = queryStr(req.query.workspace_id);
     if (!workspaceId) {
       return res.status(400).json({ error: "workspace_id is required" });
     }
@@ -383,7 +372,7 @@ app.get("/api/media-sets", async (req: Request, res: Response) => {
 
 app.get("/api/media-sets/:id", async (req: Request, res: Response) => {
   try {
-    const set = await getMediaSet(req.params.id);
+    const set = await getMediaSet(queryStr(req.params.id));
     if (!set) return res.status(404).json({ error: "Media set not found" });
     return res.json(set);
   } catch (error) {
@@ -403,7 +392,7 @@ app.post("/api/media-sets/:id/items", async (req: Request, res: Response) => {
         .json({ error: "item_id and item_type are required" });
     }
     const item = await addMediaSetItem({
-      set_id: req.params.id,
+      set_id: queryStr(req.params.id),
       item_id,
       item_type,
     });
@@ -423,7 +412,7 @@ if (process.env.NODE_ENV !== "test") {
     // Errors are handled internally with reconnection; don't crash on failure.
     startAutomationListener().catch((err) => {
       process.stderr.write(
-        `Failed to start automation listener: ${err instanceof Error ? err.message : String(err)}\n`,
+        `Failed to start automation listener: ${getErrorMessage(err)}\n`,
       );
     });
   });

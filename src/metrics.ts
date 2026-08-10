@@ -68,8 +68,19 @@ export const rateLimitViolationsTotal = new client.Counter({
   registers: [register],
 });
 
+export const langsmithWebhookResultsTotal = new client.Counter({
+  name: "clone_langsmith_webhook_results_total",
+  help: "LangSmith automation webhook processing results",
+  labelNames: ["rule_id", "action", "outcome"],
+  registers: [register],
+});
+
 export function metricsMiddleware() {
-  return (req: { method: string; path: string; route?: { path?: string } }, res: any, next: () => void) => {
+  return (
+    req: { method: string; path: string; route?: { path?: string } },
+    res: any,
+    next: () => void,
+  ) => {
     const start = process.hrtime.bigint();
     const endpoint = req.route?.path || req.path;
 
@@ -79,10 +90,7 @@ export function metricsMiddleware() {
       const labels = { method: req.method, endpoint, status_code: status };
 
       httpRequestsTotal.inc(labels);
-      httpRequestDuration.observe(
-        { method: req.method, endpoint },
-        duration
-      );
+      httpRequestDuration.observe({ method: req.method, endpoint }, duration);
     });
 
     next();

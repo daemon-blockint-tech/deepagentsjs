@@ -4,7 +4,7 @@ import { proposeActionTool } from "./tools.js";
 
 export interface AutomationContext {
   workspace_id: string;
-  trigger: "action_proposed" | "action_approved" | "action_executed" | "object_changed" | "schedule";
+  trigger: "action_proposed" | "action_approved" | "action_rejected" | "action_executed" | "object_changed" | "schedule";
   action_type?: string;
   action_payload?: Record<string, unknown>;
   object_id?: string;
