@@ -12,7 +12,14 @@ import express, {
 import cors from "cors";
 import { z } from "zod";
 import { traceable } from "langsmith/traceable";
-import { getCloneAgent } from "./agent.js";
+import {
+  getCloneAgent,
+  extractInterrupt,
+  getPendingApproval,
+  resumeAgent,
+  threadConfig,
+  DEFAULT_MODEL as DEFAULT_CHAT_MODEL,
+} from "./agent.js";
 import { getCurrentUserId, runWithUserId } from "./auth.js";
 import { register } from "./metrics.js";
 import { rateLimitMiddleware } from "./rate-limit.js";
@@ -99,6 +106,18 @@ interface ChatInput {
 
 interface ChatContext extends ChatInput {
   context: string;
+}
+
+/**
+ * A run's identity for the checkpointer.
+ *
+ * Deliberately fresh per request rather than per conversation: the client
+ * still sends full history on every call, so reusing an id would replay that
+ * history on top of the checkpointed state and duplicate every message. The
+ * id exists only so an interrupted run can be resumed.
+ */
+function newThreadId(): string {
+  return crypto.randomUUID();
 }
 
 interface AiMessageLike {
@@ -212,9 +231,12 @@ const retrieve = traceable(
 );
 
 const generate = traceable(
-  async (ctx: ChatContext) => {
+  async (ctx: ChatContext, threadId: string) => {
     const activeAgent = await getCloneAgent(ctx.model);
-    const result = await activeAgent.invoke({ messages: ctx.messages });
+    const result = await activeAgent.invoke(
+      { messages: ctx.messages },
+      threadConfig(threadId),
+    );
     return result;
   },
   {
@@ -231,7 +253,12 @@ const runChat = traceable(
   ) => {
     const input = await ingest(messages, documents, model);
     const ctx = await retrieve(input);
-    return generate(ctx);
+    const threadId = newThreadId();
+    const result = await generate(ctx, threadId);
+    return {
+      result,
+      interrupt: extractInterrupt(result, threadId, ctx.model ?? DEFAULT_CHAT_MODEL),
+    };
   },
   {
     name: "clone_chat",
@@ -282,9 +309,12 @@ app.post("/api/chat", async (req: Request, res: Response) => {
 
   try {
     const { messages, model, documents } = parseChatBody(req.body);
-    const result = await runWithUserId(userId, () =>
+    const { result, interrupt } = await runWithUserId(userId, () =>
       runChat(messages, documents, model),
     );
+    // A paused run has no answer yet — hand the caller the approval request
+    // instead, so it never renders a half-finished turn as the reply.
+    if (interrupt) return res.json(interrupt);
     return res.json(result);
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
@@ -324,7 +354,11 @@ app.post("/api/chat/stream", async (req: Request, res: Response) => {
       const input = await ingest(messages, documents, model);
       const ctx = await retrieve(input);
       const activeAgent = await getCloneAgent(model);
-      const stream = await activeAgent.stream({ messages: ctx.messages });
+      const threadId = newThreadId();
+      const stream = await activeAgent.stream(
+        { messages: ctx.messages },
+        threadConfig(threadId),
+      );
 
       for await (const chunk of stream) {
         if (disconnected) break;
@@ -332,6 +366,15 @@ app.post("/api/chat/stream", async (req: Request, res: Response) => {
         if (content) {
           res.write(`data: ${JSON.stringify({ content })}\n\n`);
         }
+      }
+
+      // A gated tool parks the run rather than finishing it. The stream simply
+      // drains, so ask the checkpointer whether an approval is outstanding and
+      // forward it; the client holds until a decision comes back.
+      if (disconnected) return;
+      const paused = await getPendingApproval(threadId, model);
+      if (paused) {
+        res.write(`data: ${JSON.stringify(paused)}\n\n`);
       }
     });
 
@@ -342,6 +385,68 @@ app.post("/api/chat/stream", async (req: Request, res: Response) => {
     if (disconnected || res.writableEnded) return;
     res.write(`data: ${JSON.stringify({ error: getErrorMessage(error) })}\n\n`);
     return res.end();
+  }
+});
+
+// One decision per pending action, in the order the interrupt listed them.
+// `respond` is deliberately absent: the JS middleware only accepts these three.
+const decisionSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("approve") }),
+  z.object({ type: z.literal("reject"), message: z.string().optional() }),
+  z.object({
+    type: z.literal("edit"),
+    editedAction: z.object({
+      name: z.string(),
+      args: z.record(z.unknown()),
+    }),
+  }),
+]);
+
+const resumeBodySchema = z.object({
+  thread_id: z.string().min(1),
+  model: z.string().optional(),
+  decisions: z.array(decisionSchema).min(1),
+});
+
+app.post("/api/chat/resume", async (req: Request, res: Response) => {
+  const userId = await getAuthenticatedUserId(req);
+  if (!userId) return res.status(401).json({ error: "Unauthorized" });
+
+  const parsed = resumeBodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({
+      error: parsed.error.errors
+        .map((e) => `${e.path.join(".")}: ${e.message}`)
+        .join("; "),
+    });
+  }
+
+  const { thread_id, model, decisions } = parsed.data;
+
+  // Only resume a thread that is actually parked. Without this, an unknown or
+  // already-resumed id would start a fresh run from empty state and the tool
+  // would execute with no approval behind it.
+  const pending = await getPendingApproval(thread_id, model);
+  if (!pending) {
+    return res
+      .status(409)
+      .json({ error: "No pending approval for this thread" });
+  }
+  if (decisions.length !== pending.action_requests.length) {
+    return res.status(400).json({
+      error: `Expected ${pending.action_requests.length} decision(s), got ${decisions.length}`,
+    });
+  }
+
+  try {
+    const { result, interrupt } = await runWithUserId(userId, () =>
+      resumeAgent(thread_id, decisions as Parameters<typeof resumeAgent>[1], model),
+    );
+    // The agent may request another gated tool after these run.
+    if (interrupt) return res.json(interrupt);
+    return res.json(result);
+  } catch (error) {
+    return res.status(400).json({ error: getErrorMessage(error) });
   }
 });
 

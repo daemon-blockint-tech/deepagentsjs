@@ -95,6 +95,14 @@ export {
   // Completion callback middleware for async subagents
   createCompletionCallbackMiddleware,
   type CompletionCallbackOptions,
+  // Rubric middleware: LLM-as-a-judge grading loop
+  createRubricMiddleware,
+  formatRubricTranscript,
+  computeRubricOutcome,
+  type RubricMiddlewareOptions,
+  type RubricEvaluation,
+  type RubricCriterionResult,
+  type RubricStatus,
   // Other middleware types
   type FilesystemMiddlewareOptions,
   type FsToolName,

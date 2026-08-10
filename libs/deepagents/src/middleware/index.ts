@@ -70,3 +70,14 @@ export {
   type AsyncTaskStatus,
   ASYNC_TASK_TOOL_NAMES,
 } from "./async_subagents.js";
+
+// Rubric middleware: LLM-as-a-judge grading loop
+export {
+  createRubricMiddleware,
+  formatRubricTranscript,
+  computeRubricOutcome,
+  type RubricMiddlewareOptions,
+  type RubricEvaluation,
+  type RubricCriterionResult,
+  type RubricStatus,
+} from "./rubric.js";
