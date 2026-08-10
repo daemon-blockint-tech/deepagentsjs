@@ -11,26 +11,20 @@ import express, {
 } from "express";
 import cors from "cors";
 import { z } from "zod";
-import { traceable } from "langsmith/traceable";
-import {
-  getCloneAgent,
-  extractInterrupt,
-  getPendingApproval,
-  resumeAgent,
-  threadConfig,
-  DEFAULT_MODEL as DEFAULT_CHAT_MODEL,
-} from "./agent.js";
 import { getCurrentUserId, runWithUserId } from "./auth.js";
 import { register } from "./metrics.js";
 import { rateLimitMiddleware } from "./rate-limit.js";
 import { getSupabaseClient } from "./supabase.js";
-import { parseDocuments, type DocumentPayload } from "./udop.js";
-import { semanticQueryOntology } from "./semantic.js";
 import { approveAction, executeAction } from "./actions.js";
 import {
   evaluateAutomations,
   startAutomationScheduler,
+  stopAutomationScheduler,
 } from "./automations.js";
+import {
+  startAutomationListener,
+  stopAutomationListener,
+} from "./automation-listener.js";
 import { queryInterfaceObjects, executeInterfaceAction } from "./interfaces.js";
 import { queryObjectSet } from "./services/object-set.js";
 import {
@@ -40,6 +34,7 @@ import {
   listInterfaces,
 } from "./services/metadata.js";
 import { uploadFile, downloadFile, deleteFile } from "./storage.js";
+import { listThreadFiles, readThreadFile } from "./thread-files.js";
 import {
   createMediaSet,
   addMediaSetItem,
@@ -99,172 +94,15 @@ if (langSmithEnabled) {
   );
 }
 
-interface ChatInput {
-  messages: Array<{ role: string; content: string }>;
-  model?: string;
+function getErrorMessage(error: unknown): string {
+  if (typeof error === "string") return error;
+  const err = error as
+    | { message?: unknown; toString?: () => string }
+    | undefined;
+  if (typeof err?.message === "string") return err.message;
+  if (typeof err?.toString === "function") return err.toString();
+  return "Unknown error";
 }
-
-interface ChatContext extends ChatInput {
-  context: string;
-}
-
-/**
- * A run's identity for the checkpointer.
- *
- * Deliberately fresh per request rather than per conversation: the client
- * still sends full history on every call, so reusing an id would replay that
- * history on top of the checkpointed state and duplicate every message. The
- * id exists only so an interrupted run can be resumed.
- */
-function newThreadId(): string {
-  return crypto.randomUUID();
-}
-
-interface AiMessageLike {
-  getType?: () => string;
-  _getType?: () => string;
-  content: unknown;
-}
-
-interface AgentChunk {
-  messages?: Array<unknown>;
-}
-
-const chatMessageSchema = z.object({
-  role: z.string().min(1),
-  content: z.string().min(1),
-});
-
-const documentSchema = z.object({
-  name: z.string().min(1),
-  type: z.string().min(1),
-  content: z.string().min(1), // base64 encoded
-});
-
-const chatBodySchema = z.object({
-  messages: z.array(chatMessageSchema).min(1),
-  model: z.string().optional(),
-  documents: z.array(documentSchema).optional(),
-});
-
-function parseChatBody(body: unknown) {
-  const result = chatBodySchema.safeParse(body);
-  if (!result.success) {
-    throw new Error(
-      result.error.errors
-        .map((e) => `${e.path.join(".")}: ${e.message}`)
-        .join("; "),
-    );
-  }
-  return result.data;
-}
-
-const ingest = traceable(
-  async (
-    messages: Array<{ role: string; content: string }>,
-    documents: DocumentPayload[] | undefined,
-    model?: string,
-  ): Promise<ChatInput> => {
-    const enriched = [...messages];
-    if (documents && documents.length > 0) {
-      const parsed = await parseDocuments(documents);
-      for (const doc of parsed) {
-        enriched.push({
-          role: "user",
-          content: `Document "${doc.name}" (${doc.type}):\n${doc.text}`,
-        });
-      }
-    }
-    return { messages: enriched, model };
-  },
-  {
-    name: "ingest",
-    run_type: "tool",
-  },
-);
-
-const retrieve = traceable(
-  async (input: ChatInput): Promise<ChatContext> => {
-    const workspaceId = process.env.DEFAULT_WORKSPACE_ID;
-    const userId = getCurrentUserId();
-    if (!workspaceId || !userId) {
-      return { ...input, context: "" };
-    }
-
-    const userMessage = input.messages
-      .filter((m) => m.role === "user")
-      .pop()?.content;
-    if (!userMessage) {
-      return { ...input, context: "" };
-    }
-
-    let results: unknown[] = [];
-    try {
-      results = await semanticQueryOntology({
-        workspace_id: workspaceId,
-        query: userMessage,
-        limit: 10,
-        threshold: 0.5,
-      });
-    } catch {
-      // If semantic search fails (e.g. no API key), continue without context
-    }
-
-    const context = results.length
-      ? JSON.stringify({ workspace_id: workspaceId, chunks: results }, null, 2)
-      : "";
-
-    const contextualMessages = [...input.messages];
-    if (context) {
-      contextualMessages.splice(contextualMessages.length - 1, 0, {
-        role: "system",
-        content: `Relevant ontology chunks from workspace:\n${context}`,
-      });
-    }
-
-    return { messages: contextualMessages, model: input.model, context };
-  },
-  {
-    name: "retrieve",
-    run_type: "retriever",
-  },
-);
-
-const generate = traceable(
-  async (ctx: ChatContext, threadId: string) => {
-    const activeAgent = await getCloneAgent(ctx.model);
-    const result = await activeAgent.invoke(
-      { messages: ctx.messages },
-      threadConfig(threadId),
-    );
-    return result;
-  },
-  {
-    name: "generate",
-    run_type: "llm",
-  },
-);
-
-const runChat = traceable(
-  async (
-    messages: Array<{ role: string; content: string }>,
-    documents: DocumentPayload[] | undefined,
-    model?: string,
-  ) => {
-    const input = await ingest(messages, documents, model);
-    const ctx = await retrieve(input);
-    const threadId = newThreadId();
-    const result = await generate(ctx, threadId);
-    return {
-      result,
-      interrupt: extractInterrupt(result, threadId, ctx.model ?? DEFAULT_CHAT_MODEL),
-    };
-  },
-  {
-    name: "clone_chat",
-    run_type: "chain",
-  },
-);
 
 // Identity is derived from the caller's Supabase access token, never from a
 // client-supplied user id header (which would be trivially spoofable).
@@ -281,20 +119,6 @@ async function getAuthenticatedUserId(req: Request): Promise<string | null> {
   }
 }
 
-function getLatestAiContent(chunk: AgentChunk) {
-  const messages = chunk.messages;
-  if (!Array.isArray(messages) || messages.length === 0) return null;
-
-  const last = messages[messages.length - 1] as AiMessageLike | undefined;
-  const type = last?.getType?.() ?? last?._getType?.();
-  if (type !== "ai" || !last) return null;
-
-  const content = last.content;
-  if (typeof content === "string") return content;
-  if (content === null || content === undefined) return null;
-  return JSON.stringify(content as Record<string, unknown> | Array<unknown>);
-}
-
 app.get("/health", (_req: Request, res: Response) => {
   return res.json({
     ok: true,
@@ -303,152 +127,12 @@ app.get("/health", (_req: Request, res: Response) => {
   });
 });
 
-app.post("/api/chat", async (req: Request, res: Response) => {
-  const userId = await getAuthenticatedUserId(req);
-  if (!userId) return res.status(401).json({ error: "Unauthorized" });
-
-  try {
-    const { messages, model, documents } = parseChatBody(req.body);
-    const { result, interrupt } = await runWithUserId(userId, () =>
-      runChat(messages, documents, model),
-    );
-    // A paused run has no answer yet — hand the caller the approval request
-    // instead, so it never renders a half-finished turn as the reply.
-    if (interrupt) return res.json(interrupt);
-    return res.json(result);
-  } catch (error) {
-    return res.status(400).json({ error: getErrorMessage(error) });
-  }
-});
-
-app.post("/api/chat/stream", async (req: Request, res: Response) => {
-  const userId = await getAuthenticatedUserId(req);
-  if (!userId) return res.status(401).json({ error: "Unauthorized" });
-
-  let body: z.infer<typeof chatBodySchema>;
-  try {
-    body = parseChatBody(req.body);
-  } catch (error) {
-    return res.status(400).json({ error: getErrorMessage(error) });
-  }
-
-  const { messages, model, documents } = body;
-
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache, no-transform");
-  res.setHeader("Connection", "keep-alive");
-  res.setHeader("X-Accel-Buffering", "no");
-
-  let disconnected = false;
-  req.on("aborted", () => {
-    disconnected = true;
-  });
-  res.on("close", () => {
-    if (!res.writableEnded) {
-      disconnected = true;
-    }
-  });
-
-  try {
-    await runWithUserId(userId, async () => {
-      const input = await ingest(messages, documents, model);
-      const ctx = await retrieve(input);
-      const activeAgent = await getCloneAgent(model);
-      const threadId = newThreadId();
-      const stream = await activeAgent.stream(
-        { messages: ctx.messages },
-        threadConfig(threadId),
-      );
-
-      for await (const chunk of stream) {
-        if (disconnected) break;
-        const content = getLatestAiContent(chunk as AgentChunk);
-        if (content) {
-          res.write(`data: ${JSON.stringify({ content })}\n\n`);
-        }
-      }
-
-      // A gated tool parks the run rather than finishing it. The stream simply
-      // drains, so ask the checkpointer whether an approval is outstanding and
-      // forward it; the client holds until a decision comes back.
-      if (disconnected) return;
-      const paused = await getPendingApproval(threadId, model);
-      if (paused) {
-        res.write(`data: ${JSON.stringify(paused)}\n\n`);
-      }
-    });
-
-    if (disconnected || res.writableEnded) return;
-    res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
-    return res.end();
-  } catch (error) {
-    if (disconnected || res.writableEnded) return;
-    res.write(`data: ${JSON.stringify({ error: getErrorMessage(error) })}\n\n`);
-    return res.end();
-  }
-});
-
-// One decision per pending action, in the order the interrupt listed them.
-// `respond` is deliberately absent: the JS middleware only accepts these three.
-const decisionSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("approve") }),
-  z.object({ type: z.literal("reject"), message: z.string().optional() }),
-  z.object({
-    type: z.literal("edit"),
-    editedAction: z.object({
-      name: z.string(),
-      args: z.record(z.unknown()),
-    }),
-  }),
-]);
-
-const resumeBodySchema = z.object({
-  thread_id: z.string().min(1),
-  model: z.string().optional(),
-  decisions: z.array(decisionSchema).min(1),
-});
-
-app.post("/api/chat/resume", async (req: Request, res: Response) => {
-  const userId = await getAuthenticatedUserId(req);
-  if (!userId) return res.status(401).json({ error: "Unauthorized" });
-
-  const parsed = resumeBodySchema.safeParse(req.body);
-  if (!parsed.success) {
-    return res.status(400).json({
-      error: parsed.error.errors
-        .map((e) => `${e.path.join(".")}: ${e.message}`)
-        .join("; "),
-    });
-  }
-
-  const { thread_id, model, decisions } = parsed.data;
-
-  // Only resume a thread that is actually parked. Without this, an unknown or
-  // already-resumed id would start a fresh run from empty state and the tool
-  // would execute with no approval behind it.
-  const pending = await getPendingApproval(thread_id, model);
-  if (!pending) {
-    return res
-      .status(409)
-      .json({ error: "No pending approval for this thread" });
-  }
-  if (decisions.length !== pending.action_requests.length) {
-    return res.status(400).json({
-      error: `Expected ${pending.action_requests.length} decision(s), got ${decisions.length}`,
-    });
-  }
-
-  try {
-    const { result, interrupt } = await runWithUserId(userId, () =>
-      resumeAgent(thread_id, decisions as Parameters<typeof resumeAgent>[1], model),
-    );
-    // The agent may request another gated tool after these run.
-    if (interrupt) return res.json(interrupt);
-    return res.json(result);
-  } catch (error) {
-    return res.status(400).json({ error: getErrorMessage(error) });
-  }
-});
+// ---------------------------------------------------------------------------
+// Chat routes are served by the LangGraph Agent Server (port 2024), not here.
+// The legacy /api/chat, /api/chat/stream, /api/chat/resume routes were removed
+// when the frontend migrated to @langchain/langgraph-sdk. This Express server
+// now handles only: actions, metadata, storage, media-sets, and health.
+// ---------------------------------------------------------------------------
 
 // Action lifecycle routes
 app.post("/api/actions/:id/approve", async (req: Request, res: Response) => {
@@ -735,7 +419,26 @@ if (process.env.NODE_ENV !== "test") {
   app.listen(PORT, () => {
     process.stdout.write(`Backend server listening on port ${PORT}\n`);
     startAutomationScheduler();
+    // Start the Postgres LISTEN/NOTIFY listener for object_changed automations.
+    // Errors are handled internally with reconnection; don't crash on failure.
+    startAutomationListener().catch((err) => {
+      process.stderr.write(
+        `Failed to start automation listener: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    });
   });
 }
+
+// Graceful shutdown: stop the scheduler and listener before exiting.
+function gracefulShutdown(signal: string): void {
+  process.stdout.write(`Received ${signal}; shutting down automations\n`);
+  stopAutomationScheduler();
+  void stopAutomationListener().finally(() => {
+    process.exit(0);
+  });
+}
+
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 
 export { app };

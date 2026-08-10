@@ -1,6 +1,7 @@
 import { getSupabaseClient } from "./supabase.js";
 import { getCurrentUserId } from "./auth.js";
 import { proposeActionTool } from "./tools.js";
+import { scheduleOutcomeCheck } from "./outcome-tracker.js";
 
 export interface ActionPayload {
   workspace_id: string;
@@ -180,6 +181,52 @@ export async function executeAction(
   if (statusError) throw new Error(statusError.message);
 
   await actionLog(supabase, actionId, workspaceId, "executed");
+
+  // Record the decision with an initial outcome snapshot.
+  // The outcome is updated later by the outcome-tracker (delayed metric check)
+  // or by user feedback flowing back through /api/feedback.
+  await supabase.from("decisions").insert({
+    workspace_id: workspaceId,
+    action_id: actionId,
+    outcome: {
+      type,
+      status: "executed",
+      executed_at: now,
+      payload_summary: summarizePayload(type, payload),
+    },
+    created_by: userId,
+    executed_at: now,
+  });
+
+  // Schedule a delayed outcome check so the agent can learn whether
+  // the action's effect persisted (the "Clone jadi semakin ahli" loop).
+  scheduleOutcomeCheck(actionId, workspaceId, type, payload);
+}
+
+/**
+ * Produce a compact summary of the action payload for the decision record.
+ * Keeps the outcome JSON small while preserving enough context for learning.
+ */
+function summarizePayload(
+  type: string,
+  payload: Record<string, unknown>
+): Record<string, unknown> {
+  if (type === "update_object") {
+    return {
+      object_id: payload.object_id,
+      fields_updated: Object.keys(payload.updates ?? payload),
+    };
+  }
+  if (type === "create_object") {
+    return {
+      object_type: payload.object_type,
+      display_name: payload.display_name,
+    };
+  }
+  if (type === "webhook") {
+    return { url: payload.url };
+  }
+  return { keys: Object.keys(payload) };
 }
 
 export async function approveAction(
