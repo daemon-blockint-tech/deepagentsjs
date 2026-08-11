@@ -38,6 +38,7 @@ import {
   listMediaSets,
 } from "./media-sets.js";
 import { langsmithWebhookRouter } from "./langsmith-webhook.js";
+import { embedText } from "./embeddings.js";
 import { getErrorMessage } from "./utils.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -313,6 +314,422 @@ app.delete("/api/automations/:id", async (req: Request, res: Response) => {
     const supabase = getSupabaseClient();
     const { error } = await supabase
       .from("ontology_automations")
+      .delete()
+      .eq("id", id)
+      .eq("workspace_id", workspace_id);
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+    return res.json({ ok: true });
+  } catch (error) {
+    return res.status(400).json({ error: getErrorMessage(error) });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Ontology objects — browse, search, CRUD
+// ---------------------------------------------------------------------------
+
+// List objects with optional filters
+app.get("/api/objects", async (req: Request, res: Response) => {
+  try {
+    const workspace_id =
+      queryStr(req.query.workspace_id) ||
+      process.env.DEFAULT_WORKSPACE_ID ||
+      "";
+    if (!workspace_id) {
+      return res.status(400).json({ error: "workspace_id is required" });
+    }
+    const objectType = queryStr(req.query.object_type) || "";
+    const query = queryStr(req.query.query) || "";
+    const limit = Math.min(Number(req.query.limit) || 50, 100);
+    const offset = Number(req.query.offset) || 0;
+
+    const supabase = getSupabaseClient();
+    let builder = supabase
+      .from("ontology_objects")
+      .select(
+        "id, object_type, external_id, display_name, attributes, created_at, updated_at",
+        { count: "exact" },
+      )
+      .eq("workspace_id", workspace_id)
+      .order("updated_at", { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (objectType) {
+      builder = builder.eq("object_type", objectType);
+    }
+    if (query) {
+      builder = builder.or(
+        `display_name.ilike.%${query}%,external_id.ilike.%${query}%`,
+      );
+    }
+
+    const { data, error, count } = await builder;
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+    return res.json({ objects: data ?? [], total: count ?? 0 });
+  } catch (error) {
+    return res.status(400).json({ error: getErrorMessage(error) });
+  }
+});
+
+// Get a single object by ID
+app.get("/api/objects/:id", async (req: Request, res: Response) => {
+  try {
+    const id = queryStr(req.params.id);
+    const workspace_id =
+      queryStr(req.query.workspace_id) ||
+      process.env.DEFAULT_WORKSPACE_ID ||
+      "";
+    if (!workspace_id) {
+      return res.status(400).json({ error: "workspace_id is required" });
+    }
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+      .from("ontology_objects")
+      .select(
+        "id, object_type, external_id, display_name, attributes, created_at, updated_at",
+      )
+      .eq("id", id)
+      .eq("workspace_id", workspace_id)
+      .single();
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+    return res.json({ object: data });
+  } catch (error) {
+    return res.status(400).json({ error: getErrorMessage(error) });
+  }
+});
+
+// Semantic search via pgvector
+app.get("/api/objects/search/semantic", async (req: Request, res: Response) => {
+  try {
+    const workspace_id =
+      queryStr(req.query.workspace_id) ||
+      process.env.DEFAULT_WORKSPACE_ID ||
+      "";
+    if (!workspace_id) {
+      return res.status(400).json({ error: "workspace_id is required" });
+    }
+    const query = queryStr(req.query.query) || "";
+    if (!query) {
+      return res.status(400).json({ error: "query is required" });
+    }
+    const limit = Math.min(Number(req.query.limit) || 10, 50);
+    const threshold = Number(req.query.threshold) || 0.5;
+
+    const embedding = await embedText(query);
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase.rpc("match_ontology_chunks", {
+      query_embedding: JSON.stringify(embedding),
+      match_threshold: threshold,
+      match_count: limit,
+      p_workspace_id: workspace_id,
+    });
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+    return res.json({ results: data ?? [] });
+  } catch (error) {
+    return res.status(400).json({ error: getErrorMessage(error) });
+  }
+});
+
+// Get normalized properties for an object
+app.get("/api/objects/:id/properties", async (req: Request, res: Response) => {
+  try {
+    const id = queryStr(req.params.id);
+    const workspace_id =
+      queryStr(req.query.workspace_id) ||
+      process.env.DEFAULT_WORKSPACE_ID ||
+      "";
+    if (!workspace_id) {
+      return res.status(400).json({ error: "workspace_id is required" });
+    }
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+      .from("ontology_properties")
+      .select("key, value, value_type")
+      .eq("object_id", id)
+      .eq("workspace_id", workspace_id)
+      .order("key", { ascending: true });
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+    return res.json({ properties: data ?? [] });
+  } catch (error) {
+    return res.status(400).json({ error: getErrorMessage(error) });
+  }
+});
+
+// Create a new object (admin operation — direct insert, not through action lifecycle)
+app.post("/api/objects", async (req: Request, res: Response) => {
+  try {
+    const workspace_id =
+      queryStr(req.query.workspace_id) ||
+      process.env.DEFAULT_WORKSPACE_ID ||
+      "";
+    if (!workspace_id) {
+      return res.status(400).json({ error: "workspace_id is required" });
+    }
+    const { object_type, external_id, display_name, attributes } = req.body as {
+      object_type?: string;
+      external_id?: string;
+      display_name?: string;
+      attributes?: Record<string, unknown>;
+    };
+    if (!object_type || !external_id) {
+      return res
+        .status(400)
+        .json({ error: "object_type and external_id are required" });
+    }
+    const attrs = attributes ?? {};
+    const supabase = getSupabaseClient();
+
+    // Check for type conflict on re-create with same external_id
+    const { data: existing } = await supabase
+      .from("ontology_objects")
+      .select("id, object_type")
+      .eq("workspace_id", workspace_id)
+      .eq("external_id", external_id)
+      .maybeSingle();
+    if (existing && existing.object_type !== object_type) {
+      return res.status(400).json({
+        error: `Object with external_id "${external_id}" already exists with object_type "${existing.object_type}", cannot create as "${object_type}".`,
+      });
+    }
+
+    const { data, error } = await supabase
+      .from("ontology_objects")
+      .upsert(
+        {
+          workspace_id,
+          object_type,
+          external_id,
+          display_name: display_name ?? external_id,
+          attributes: attrs,
+        },
+        { onConflict: "workspace_id, external_id" },
+      )
+      .select("id")
+      .single();
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+
+    const objectId = data.id;
+
+    // Sync normalized properties: delete stale, upsert current
+    const currentKeys = Object.entries(attrs)
+      .filter(([k, v]) => !k.startsWith("_") && v !== null && v !== undefined)
+      .map(([k]) => k);
+
+    let staleDelete = supabase
+      .from("ontology_properties")
+      .delete()
+      .eq("object_id", objectId);
+    if (currentKeys.length > 0) {
+      staleDelete = staleDelete.notIn("key", currentKeys);
+    }
+    await staleDelete;
+
+    for (const [key, value] of Object.entries(attrs)) {
+      if (key.startsWith("_")) continue;
+      if (value === null || value === undefined) continue;
+      await supabase.from("ontology_properties").upsert(
+        {
+          workspace_id,
+          object_id: objectId,
+          key,
+          value: value as unknown,
+          value_type:
+            typeof value === "number"
+              ? "number"
+              : typeof value === "boolean"
+                ? "boolean"
+                : "string",
+        },
+        { onConflict: "workspace_id, object_id, key" },
+      );
+    }
+
+    // Generate embedding and upsert chunk for semantic searchability
+    try {
+      const embeddableAttrs: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(attrs)) {
+        if (k.startsWith("_")) continue;
+        if (v === null || v === undefined) continue;
+        embeddableAttrs[k] = v;
+      }
+      const chunkText = `${display_name ?? external_id}\n${JSON.stringify(embeddableAttrs)}`;
+      const embedding = await embedText(chunkText);
+      await supabase.from("ontology_chunks").upsert(
+        {
+          workspace_id,
+          object_id: objectId,
+          content: chunkText,
+          embedding: JSON.stringify(embedding),
+        },
+        { onConflict: "workspace_id, object_id" },
+      );
+    } catch {
+      // Embedding failure is non-fatal — object is created, just not semantically searchable
+    }
+
+    return res.json({
+      object: {
+        id: objectId,
+        object_type,
+        external_id,
+        display_name,
+        attributes: attrs,
+      },
+    });
+  } catch (error) {
+    return res.status(400).json({ error: getErrorMessage(error) });
+  }
+});
+
+// Update an object (admin operation — direct update, not through action lifecycle)
+app.patch("/api/objects/:id", async (req: Request, res: Response) => {
+  try {
+    const id = queryStr(req.params.id);
+    const workspace_id =
+      queryStr(req.query.workspace_id) ||
+      process.env.DEFAULT_WORKSPACE_ID ||
+      "";
+    if (!workspace_id) {
+      return res.status(400).json({ error: "workspace_id is required" });
+    }
+    const { display_name, attributes } = req.body as {
+      display_name?: string;
+      attributes?: Record<string, unknown>;
+    };
+
+    const supabase = getSupabaseClient();
+
+    // Fetch current object to get existing attributes for merge
+    const { data: existing, error: fetchError } = await supabase
+      .from("ontology_objects")
+      .select("id, attributes")
+      .eq("id", id)
+      .eq("workspace_id", workspace_id)
+      .single();
+    if (fetchError || !existing) {
+      return res
+        .status(400)
+        .json({ error: fetchError?.message ?? "Object not found" });
+    }
+
+    const updates: Record<string, unknown> = {
+      updated_at: new Date().toISOString(),
+    };
+    if (display_name !== undefined) updates.display_name = display_name;
+
+    // If attributes provided, merge with existing
+    const mergedAttrs = attributes
+      ? { ...(existing.attributes as Record<string, unknown>), ...attributes }
+      : (existing.attributes as Record<string, unknown>);
+
+    if (attributes) {
+      updates.attributes = mergedAttrs;
+    }
+
+    const { error: updateError } = await supabase
+      .from("ontology_objects")
+      .update(updates)
+      .eq("id", id)
+      .eq("workspace_id", workspace_id);
+    if (updateError) {
+      return res.status(400).json({ error: updateError.message });
+    }
+
+    // Sync normalized properties if attributes changed
+    if (attributes) {
+      const currentKeys = Object.entries(mergedAttrs)
+        .filter(([k, v]) => !k.startsWith("_") && v !== null && v !== undefined)
+        .map(([k]) => k);
+
+      let staleDelete = supabase
+        .from("ontology_properties")
+        .delete()
+        .eq("object_id", id);
+      if (currentKeys.length > 0) {
+        staleDelete = staleDelete.notIn("key", currentKeys);
+      }
+      await staleDelete;
+
+      for (const [key, value] of Object.entries(mergedAttrs)) {
+        if (key.startsWith("_")) continue;
+        if (value === null || value === undefined) continue;
+        await supabase.from("ontology_properties").upsert(
+          {
+            workspace_id,
+            object_id: id,
+            key,
+            value: value as unknown,
+            value_type:
+              typeof value === "number"
+                ? "number"
+                : typeof value === "boolean"
+                  ? "boolean"
+                  : "string",
+          },
+          { onConflict: "workspace_id, object_id, key" },
+        );
+      }
+
+      // Refresh embedding
+      try {
+        const embeddableAttrs: Record<string, unknown> = {};
+        for (const [k, v] of Object.entries(mergedAttrs)) {
+          if (k.startsWith("_")) continue;
+          if (v === null || v === undefined) continue;
+          embeddableAttrs[k] = v;
+        }
+        const name =
+          display_name ??
+          (existing.attributes as Record<string, unknown>)?.display_name ??
+          id;
+        const chunkText = `${name}\n${JSON.stringify(embeddableAttrs)}`;
+        const embedding = await embedText(chunkText);
+        await supabase.from("ontology_chunks").upsert(
+          {
+            workspace_id,
+            object_id: id,
+            content: chunkText,
+            embedding: JSON.stringify(embedding),
+          },
+          { onConflict: "workspace_id, object_id" },
+        );
+      } catch {
+        // Embedding failure is non-fatal
+      }
+    }
+
+    return res.json({ ok: true });
+  } catch (error) {
+    return res.status(400).json({ error: getErrorMessage(error) });
+  }
+});
+
+// Delete an object (cascades to properties + chunks via FK)
+app.delete("/api/objects/:id", async (req: Request, res: Response) => {
+  try {
+    const id = queryStr(req.params.id);
+    const workspace_id =
+      queryStr(req.query.workspace_id) ||
+      process.env.DEFAULT_WORKSPACE_ID ||
+      "";
+    if (!workspace_id) {
+      return res.status(400).json({ error: "workspace_id is required" });
+    }
+    const supabase = getSupabaseClient();
+    const { error } = await supabase
+      .from("ontology_objects")
       .delete()
       .eq("id", id)
       .eq("workspace_id", workspace_id);
