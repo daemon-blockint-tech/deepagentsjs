@@ -39,6 +39,7 @@ import {
   listMediaSets,
 } from "./media-sets.js";
 import { langsmithWebhookRouter } from "./langsmith-webhook.js";
+import { getErrorMessage } from "./utils.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -70,16 +71,6 @@ app.get("/metrics", async (_req: Request, res: Response) => {
   res.setHeader("Content-Type", register.contentType);
   res.send(await register.metrics());
 });
-
-function getErrorMessage(error: unknown): string {
-  if (typeof error === "string") return error;
-  const err = error as
-    | { message?: unknown; toString?: () => string }
-    | undefined;
-  if (typeof err?.message === "string") return err.message;
-  if (typeof err?.toString === "function") return err.toString();
-  return "Unknown error";
-}
 
 /**
  * Coerce an Express query/param value (string | string[] | undefined) to a string.

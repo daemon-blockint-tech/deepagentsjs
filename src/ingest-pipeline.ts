@@ -12,9 +12,12 @@
  * so the ingest is auditable alongside other workspace actions.
  */
 import { readFile } from "node:fs/promises";
+import process from "node:process";
 
 import { getSupabaseClient } from "./supabase.js";
 import { withRetry, isTransientError } from "./fault-tolerance.js";
+import { safeFetch, assertSafeLocalPath } from "./source-validation.js";
+import { getErrorMessage } from "./utils.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -66,25 +69,72 @@ async function insertOntologyObject(
   objectType: string,
   externalId: string,
   displayName: string,
-  attributes: Record<string, unknown>
+  attributes: Record<string, unknown>,
 ): Promise<string> {
   const supabase = getSupabaseClient();
 
+  // Guard against silently changing object_type on re-ingest. The unique
+  // constraint is (workspace_id, external_id) without object_type, so a
+  // naive upsert would overwrite the type. That is almost always a mistake
+  // (wrong source mapped to an existing external_id), so surface it as an
+  // explicit error instead of silently mutating the object's type.
+  const { data: existing, error: lookupError } = await supabase
+    .from("ontology_objects")
+    .select("id, object_type")
+    .eq("workspace_id", workspaceId)
+    .eq("external_id", externalId)
+    .maybeSingle();
+  if (lookupError) throw new Error(lookupError.message);
+  if (existing && existing.object_type !== objectType) {
+    throw new Error(
+      `Object with external_id "${externalId}" already exists in workspace "${workspaceId}" ` +
+        `with object_type "${existing.object_type}", cannot re-ingest as "${objectType}". ` +
+        `Use a different external_id or delete the existing object first.`,
+    );
+  }
+
+  // Upsert on (workspace_id, external_id) so re-ingesting the same
+  // source is idempotent rather than producing duplicates or unique-
+  // constraint violations.
   const { data, error } = await supabase
     .from("ontology_objects")
-    .insert({
-      workspace_id: workspaceId,
-      object_type: objectType,
-      external_id: externalId,
-      display_name: displayName,
-      attributes,
-    })
+    .upsert(
+      {
+        workspace_id: workspaceId,
+        object_type: objectType,
+        external_id: externalId,
+        display_name: displayName,
+        attributes,
+      },
+      { onConflict: "workspace_id, external_id" },
+    )
     .select("id")
     .single();
 
   if (error) throw new Error(error.message);
 
   const objectId = data.id as string;
+
+  // Compute the set of property keys that should exist for this object
+  // after this ingest. Keys starting with "_" and null/undefined values
+  // are skipped (matching the upsert loop below).
+  const currentKeys = Object.entries(attributes)
+    .filter(([k, v]) => !k.startsWith("_") && v !== null && v !== undefined)
+    .map(([k]) => k);
+
+  // Remove normalized properties that are no longer present in the
+  // current attributes, so re-ingesting a source with fewer/different
+  // fields doesn't leave stale rows. This keeps `ontology_properties`
+  // consistent with the denormalized `attributes` jsonb on re-ingest.
+  let staleDelete = supabase
+    .from("ontology_properties")
+    .delete()
+    .eq("object_id", objectId);
+  if (currentKeys.length > 0) {
+    staleDelete = staleDelete.notIn("key", currentKeys);
+  }
+  const { error: staleError } = await staleDelete;
+  if (staleError) throw new Error(staleError.message);
 
   // Insert normalized properties for searchability
   for (const [key, value] of Object.entries(attributes)) {
@@ -100,7 +150,7 @@ async function insertOntologyObject(
           value: value as unknown,
           value_type: valueTypeOf(value),
         },
-        { onConflict: "workspace_id, object_id, key" }
+        { onConflict: "workspace_id, object_id, key" },
       );
     if (propError) throw new Error(propError.message);
   }
@@ -206,15 +256,23 @@ export class CsvConnector implements IngestConnector {
   constructor(private opts: CsvConnectorOptions) {}
 
   async ingest(workspaceId: string): Promise<IngestResult> {
-    const { source, objectType, fieldMapping = {}, displayNameColumn, externalIdColumn } = this.opts;
+    const {
+      source,
+      objectType,
+      fieldMapping = {},
+      displayNameColumn,
+      externalIdColumn,
+    } = this.opts;
 
     let text: string;
     if (source.startsWith("http://") || source.startsWith("https://")) {
-      const res = await fetch(source);
-      if (!res.ok) throw new Error(`Failed to fetch CSV: ${res.status} ${res.statusText}`);
+      const res = await safeFetch(source);
+      if (!res.ok)
+        throw new Error(`Failed to fetch CSV: ${res.status} ${res.statusText}`);
       text = await res.text();
     } else {
-      text = await readFile(source, "utf-8");
+      const safePath = await assertSafeLocalPath(source);
+      text = await readFile(safePath, "utf-8");
     }
 
     const rows = parseCsv(text);
@@ -231,7 +289,9 @@ export class CsvConnector implements IngestConnector {
           // Try to coerce numbers
           const num = Number(rawValue);
           attributes[targetKey] =
-            rawValue !== "" && !Number.isNaN(num) && rawValue.trim() !== "" ? num : rawValue;
+            rawValue !== "" && !Number.isNaN(num) && rawValue.trim() !== ""
+              ? num
+              : rawValue;
         }
 
         // Determine display name
@@ -246,13 +306,19 @@ export class CsvConnector implements IngestConnector {
           `csv-${objectType}-${Date.now()}-${i}`;
 
         await withRetry(
-          () => insertOntologyObject(workspaceId, objectType, externalId, displayName, attributes),
-          DEFAULT_RETRY
+          () =>
+            insertOntologyObject(
+              workspaceId,
+              objectType,
+              externalId,
+              displayName,
+              attributes,
+            ),
+          DEFAULT_RETRY,
         )();
         ingested++;
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        errors.push(`Row ${i + 1}: ${msg}`);
+        errors.push(`Row ${i + 1}: ${getErrorMessage(err)}`);
       }
     }
 
@@ -298,8 +364,9 @@ export class JsonApiConnector implements IngestConnector {
       headers = {},
     } = this.opts;
 
-    const res = await fetch(url, { headers });
-    if (!res.ok) throw new Error(`Failed to fetch JSON: ${res.status} ${res.statusText}`);
+    const res = await safeFetch(url, { headers });
+    if (!res.ok)
+      throw new Error(`Failed to fetch JSON: ${res.status} ${res.statusText}`);
     const json = await res.json();
 
     // Support { items: [...] }, { data: [...] }, or a bare array
@@ -307,11 +374,19 @@ export class JsonApiConnector implements IngestConnector {
     if (Array.isArray(json)) {
       items = json;
     } else if (Array.isArray((json as Record<string, unknown>).items)) {
-      items = (json as Record<string, unknown[]>).items as Record<string, unknown>[];
+      items = (json as Record<string, unknown[]>).items as Record<
+        string,
+        unknown
+      >[];
     } else if (Array.isArray((json as Record<string, unknown>).data)) {
-      items = (json as Record<string, unknown[]>).data as Record<string, unknown>[];
+      items = (json as Record<string, unknown[]>).data as Record<
+        string,
+        unknown
+      >[];
     } else {
-      throw new Error("JSON response is not an array and has no `items` or `data` array");
+      throw new Error(
+        "JSON response is not an array and has no `items` or `data` array",
+      );
     }
 
     let ingested = 0;
@@ -345,14 +420,13 @@ export class JsonApiConnector implements IngestConnector {
               objectType,
               externalId,
               String(displayName),
-              attributes
+              attributes,
             ),
-          DEFAULT_RETRY
+          DEFAULT_RETRY,
         )();
         ingested++;
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        errors.push(`Item ${i + 1}: ${msg}`);
+        errors.push(`Item ${i + 1}: ${getErrorMessage(err)}`);
       }
     }
 
@@ -369,7 +443,7 @@ export class JsonApiConnector implements IngestConnector {
  */
 export async function ingestPipeline(
   workspaceId: string,
-  connectors: IngestConnector[]
+  connectors: IngestConnector[],
 ): Promise<IngestResult> {
   let totalIngested = 0;
   const allErrors: string[] = [];
@@ -382,8 +456,7 @@ export async function ingestPipeline(
         allErrors.push(`[${connector.name}] ${err}`);
       }
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      allErrors.push(`[${connector.name}] ${msg}`);
+      allErrors.push(`[${connector.name}] ${getErrorMessage(err)}`);
     }
   }
 
@@ -397,15 +470,19 @@ export async function ingestPipeline(
 /**
  * Run an ingest pipeline and record an action-log entry for auditability.
  *
- * The action is created with status "completed" (ingest is a read-from-
- * external-source + write operation, not a destructive action) and the
- * full result is stored in the payload.
+ * The action is created with status "running" (ingest is a read-from-
+ * external-source + write operation, not a destructive action) and
+ * transitions to "completed" or "failed" when the pipeline finishes.
+ * The full result is stored in the payload alongside the `started_at`
+ * timestamp captured at creation time.
  */
 export async function runIngestJob(
   workspaceId: string,
-  connectors: IngestConnector[]
+  connectors: IngestConnector[],
 ): Promise<IngestResult> {
   const supabase = getSupabaseClient();
+  const connectorNames = connectors.map((c) => c.name);
+  const startedAt = new Date().toISOString();
 
   const { data: actionData, error: actionError } = await supabase
     .from("actions")
@@ -413,8 +490,8 @@ export async function runIngestJob(
       workspace_id: workspaceId,
       type: "ingest",
       payload: {
-        connectors: connectors.map((c) => c.name),
-        started_at: new Date().toISOString(),
+        connectors: connectorNames,
+        started_at: startedAt,
       },
       requires_approval: false,
       status: "running",
@@ -426,21 +503,56 @@ export async function runIngestJob(
 
   const actionId = actionData.id as string;
 
-  const result = await ingestPipeline(workspaceId, connectors);
+  let result: IngestResult;
+  try {
+    result = await ingestPipeline(workspaceId, connectors);
+  } catch (err) {
+    // Mark the action as failed and rethrow so the caller sees the error.
+    // Log (but don't mask) a failure to update the action row — otherwise
+    // the action would be silently stuck in "running" with no audit trail.
+    const { error: failUpdateError } = await supabase
+      .from("actions")
+      .update({
+        status: "failed",
+        payload: {
+          connectors: connectorNames,
+          started_at: startedAt,
+          error: getErrorMessage(err),
+          completed_at: new Date().toISOString(),
+        },
+      })
+      .eq("id", actionId);
+    if (failUpdateError) {
+      process.stderr.write(
+        `runIngestJob: failed to mark action ${actionId} as failed: ${failUpdateError.message}\n`,
+      );
+    }
+    throw err;
+  }
 
-  // Update the action log with the result
-  await supabase
+  // Update the action log with the result. Log a failure to update so
+  // operators can detect actions stuck in "running".
+  const { error: doneUpdateError } = await supabase
     .from("actions")
     .update({
-      status: result.errors.length > 0 && result.ingested === 0 ? "failed" : "completed",
+      status:
+        result.errors.length > 0 && result.ingested === 0
+          ? "failed"
+          : "completed",
       payload: {
-        connectors: connectors.map((c) => c.name),
+        connectors: connectorNames,
+        started_at: startedAt,
         ingested: result.ingested,
         errors: result.errors,
         completed_at: new Date().toISOString(),
       },
     })
     .eq("id", actionId);
+  if (doneUpdateError) {
+    process.stderr.write(
+      `runIngestJob: failed to mark action ${actionId} as completed: ${doneUpdateError.message}\n`,
+    );
+  }
 
   return result;
 }

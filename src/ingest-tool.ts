@@ -30,7 +30,7 @@ const DEFAULT_RETRY = {
 
 async function verifyWorkspaceMembership(
   supabase: ReturnType<typeof getSupabaseClient>,
-  workspaceId: string
+  workspaceId: string,
 ) {
   const userId = getCurrentUserId();
   if (!userId) {
@@ -80,7 +80,13 @@ function buildConnector(params: {
 
 export const ingestDataTool = tool(
   withRetry(
-    async ({ workspace_id, source_type, source_url, object_type, field_mapping }) => {
+    async ({
+      workspace_id,
+      source_type,
+      source_url,
+      object_type,
+      field_mapping,
+    }) => {
       const supabase = getSupabaseClient();
       await verifyWorkspaceMembership(supabase, workspace_id);
 
@@ -105,7 +111,7 @@ export const ingestDataTool = tool(
             : `Ingested ${result.ingested} ${object_type} object(s) with ${result.errors.length} error(s).`,
       });
     },
-    DEFAULT_RETRY
+    DEFAULT_RETRY,
   ),
   {
     name: "ingest_data",
@@ -119,24 +125,26 @@ export const ingestDataTool = tool(
       workspace_id: z.string().uuid(),
       source_type: z
         .enum(["csv", "json_api"])
-        .describe("Type of data source: 'csv' for CSV files, 'json_api' for JSON API endpoints"),
+        .describe(
+          "Type of data source: 'csv' for CSV files, 'json_api' for JSON API endpoints",
+        ),
       source_url: z
         .string()
         .describe(
-          "CSV file path or URL (for csv), or JSON API URL (for json_api)"
+          "CSV file path or URL (for csv), or JSON API URL (for json_api)",
         ),
       object_type: z
         .string()
         .describe(
-          "Ontology object_type to assign, e.g. 'company', 'contact', 'product'"
+          "Ontology object_type to assign, e.g. 'company', 'contact', 'product'",
         ),
       field_mapping: z
         .record(z.string())
         .optional()
         .describe(
           "Mapping from source field names to ontology attribute names. " +
-            "Unmapped fields are carried through under their original name."
+            "Unmapped fields are carried through under their original name.",
         ),
     }),
-  }
+  },
 );

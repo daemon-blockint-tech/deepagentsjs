@@ -38,6 +38,7 @@ import process from "node:process";
 import { timingSafeEqual } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import { langsmithWebhookResultsTotal } from "./metrics.js";
+import { getErrorMessage } from "./utils.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -72,20 +73,6 @@ interface LangSmithWebhookPayload {
 // ---------------------------------------------------------------------------
 // Secret validation
 // ---------------------------------------------------------------------------
-
-/**
- * Coerce a caught error to a string without using `instanceof`
- * (the project's `no-instanceof` lint rule forbids it).
- */
-function getErrorMessage(error: unknown): string {
-  if (typeof error === "string") return error;
-  const err = error as
-    | { message?: unknown; toString?: () => string }
-    | undefined;
-  if (typeof err?.message === "string") return err.message;
-  if (typeof err?.toString === "function") return err.toString();
-  return "Unknown error";
-}
 
 /**
  * Validate the webhook secret using a constant-time comparison.
