@@ -1,7 +1,11 @@
+import process from "node:process";
+
 import { getSupabaseClient } from "./supabase.js";
 import { getCurrentUserId } from "./auth.js";
 import { proposeActionTool } from "./tools.js";
 import { scheduleOutcomeCheck } from "./outcome-tracker.js";
+import { upsertObjectChunk } from "./object-chunks.js";
+import { getErrorMessage } from "./utils.js";
 
 export interface ActionPayload {
   workspace_id: string;
@@ -28,6 +32,27 @@ function actionLog(
     event,
     performed_by: getCurrentUserId(),
   });
+}
+
+/**
+ * Re-embed an object the executor just wrote so `semantic_search` can see it.
+ *
+ * Never fatal: the ontology write already committed and the action must still
+ * be marked executed. A missed chunk is recoverable with `pnpm backfill:chunks`.
+ */
+async function refreshChunk(
+  workspaceId: string,
+  objectId: string,
+  displayName: string,
+  attributes: Record<string, unknown>
+) {
+  try {
+    await upsertObjectChunk(workspaceId, objectId, displayName, attributes);
+  } catch (err) {
+    process.stderr.write(
+      `executeAction: embedding failed for object ${objectId}: ${getErrorMessage(err)}\n`
+    );
+  }
 }
 
 async function verifyActionAccess(
@@ -90,14 +115,16 @@ export async function executeAction(
     const objectId = payload.object_id as string;
     const updates = payload.updates as Record<string, unknown>;
 
-    const { error: updateError } = await supabase
+    const { data: updated, error: updateError } = await supabase
       .from("ontology_objects")
       .update({
         attributes: updates,
         updated_at: new Date().toISOString(),
       })
       .eq("id", objectId)
-      .eq("workspace_id", workspaceId);
+      .eq("workspace_id", workspaceId)
+      .select("display_name")
+      .single();
 
     if (updateError) throw new Error(updateError.message);
 
@@ -118,6 +145,13 @@ export async function executeAction(
         );
       if (upsertError) throw new Error(upsertError.message);
     }
+
+    await refreshChunk(
+      workspaceId,
+      objectId,
+      (updated?.display_name as string) ?? objectId,
+      updates
+    );
   } else if (type === "create_object") {
     const objectType = payload.object_type as string;
     const externalId = payload.external_id as string;
@@ -151,6 +185,8 @@ export async function executeAction(
         });
       if (propError) throw new Error(propError.message);
     }
+
+    await refreshChunk(workspaceId, created.id, displayName, attributes);
   } else if (type === "webhook") {
     const url = payload.url as string;
     const body = JSON.stringify(payload.body ?? {});

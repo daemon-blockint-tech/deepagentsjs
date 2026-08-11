@@ -39,6 +39,7 @@ import {
 } from "./media-sets.js";
 import { langsmithWebhookRouter } from "./langsmith-webhook.js";
 import { embedText } from "./embeddings.js";
+import { upsertObjectChunk } from "./object-chunks.js";
 import { getErrorMessage } from "./utils.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -558,25 +559,18 @@ app.post("/api/objects", async (req: Request, res: Response) => {
 
     // Generate embedding and upsert chunk for semantic searchability
     try {
-      const embeddableAttrs: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(attrs)) {
-        if (k.startsWith("_")) continue;
-        if (v === null || v === undefined) continue;
-        embeddableAttrs[k] = v;
-      }
-      const chunkText = `${display_name ?? external_id}\n${JSON.stringify(embeddableAttrs)}`;
-      const embedding = await embedText(chunkText);
-      await supabase.from("ontology_chunks").upsert(
-        {
-          workspace_id,
-          object_id: objectId,
-          content: chunkText,
-          embedding: JSON.stringify(embedding),
-        },
-        { onConflict: "workspace_id, object_id" },
+      await upsertObjectChunk(
+        workspace_id,
+        objectId,
+        display_name ?? external_id,
+        attrs,
       );
-    } catch {
-      // Embedding failure is non-fatal — object is created, just not semantically searchable
+    } catch (err) {
+      // Embedding failure is non-fatal — object is created, just not
+      // semantically searchable. Re-save or run `pnpm backfill:chunks` to retry.
+      process.stderr.write(
+        `POST /api/objects: embedding failed for ${objectId}: ${getErrorMessage(err)}\n`,
+      );
     }
 
     return res.json({
@@ -614,7 +608,7 @@ app.patch("/api/objects/:id", async (req: Request, res: Response) => {
     // Fetch current object to get existing attributes for merge
     const { data: existing, error: fetchError } = await supabase
       .from("ontology_objects")
-      .select("id, attributes")
+      .select("id, display_name, attributes")
       .eq("id", id)
       .eq("workspace_id", workspace_id)
       .single();
@@ -681,32 +675,24 @@ app.patch("/api/objects/:id", async (req: Request, res: Response) => {
           { onConflict: "workspace_id, object_id, key" },
         );
       }
+    }
 
-      // Refresh embedding
+    // Refresh the semantic chunk whenever the object's searchable surface
+    // changed. A rename changes it just as much as an attribute edit, so
+    // this sits outside the `attributes` branch.
+    if (display_name !== undefined || attributes) {
       try {
-        const embeddableAttrs: Record<string, unknown> = {};
-        for (const [k, v] of Object.entries(mergedAttrs)) {
-          if (k.startsWith("_")) continue;
-          if (v === null || v === undefined) continue;
-          embeddableAttrs[k] = v;
-        }
-        const name =
-          display_name ??
-          (existing.attributes as Record<string, unknown>)?.display_name ??
-          id;
-        const chunkText = `${name}\n${JSON.stringify(embeddableAttrs)}`;
-        const embedding = await embedText(chunkText);
-        await supabase.from("ontology_chunks").upsert(
-          {
-            workspace_id,
-            object_id: id,
-            content: chunkText,
-            embedding: JSON.stringify(embedding),
-          },
-          { onConflict: "workspace_id, object_id" },
+        await upsertObjectChunk(
+          workspace_id,
+          id,
+          display_name ?? (existing.display_name as string) ?? id,
+          mergedAttrs,
         );
-      } catch {
-        // Embedding failure is non-fatal
+      } catch (err) {
+        // Non-fatal — the update landed, the chunk is just stale.
+        process.stderr.write(
+          `PATCH /api/objects/${id}: embedding failed: ${getErrorMessage(err)}\n`,
+        );
       }
     }
 
@@ -730,6 +716,300 @@ app.delete("/api/objects/:id", async (req: Request, res: Response) => {
     const supabase = getSupabaseClient();
     const { error } = await supabase
       .from("ontology_objects")
+      .delete()
+      .eq("id", id)
+      .eq("workspace_id", workspace_id);
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+    return res.json({ ok: true });
+  } catch (error) {
+    return res.status(400).json({ error: getErrorMessage(error) });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Relations — edges between ontology objects
+//
+// `predicate` is free text; `ontology_relation_types` (below) lets a
+// workspace declare and label the predicates it uses, but relations do not
+// FK to it, so an unregistered predicate is still valid.
+// ---------------------------------------------------------------------------
+
+const RELATION_COLUMNS =
+  "id, subject_id, predicate, object_id, attributes, created_at";
+
+/**
+ * Confirm both endpoints of a relation live in the given workspace.
+ *
+ * The service-role key bypasses RLS, so without this check a caller could
+ * link objects across workspace boundaries and read one workspace's data
+ * through another's relation graph.
+ *
+ * Returns an error message, or null when both objects check out.
+ */
+async function verifyRelationEndpoints(
+  supabase: ReturnType<typeof getSupabaseClient>,
+  workspaceId: string,
+  subjectId: string,
+  objectId: string,
+): Promise<string | null> {
+  const { data, error } = await supabase
+    .from("ontology_objects")
+    .select("id")
+    .eq("workspace_id", workspaceId)
+    .in("id", [subjectId, objectId]);
+  if (error) return error.message;
+
+  const found = new Set((data ?? []).map((row) => row.id as string));
+  const missing = [subjectId, objectId].filter((id) => !found.has(id));
+  if (missing.length > 0) {
+    return `Object(s) not found in workspace: ${[...new Set(missing)].join(", ")}`;
+  }
+  return null;
+}
+
+// List relations, optionally filtered by either endpoint or by predicate
+app.get("/api/relations", async (req: Request, res: Response) => {
+  try {
+    const workspace_id =
+      queryStr(req.query.workspace_id) ||
+      process.env.DEFAULT_WORKSPACE_ID ||
+      "";
+    if (!workspace_id) {
+      return res.status(400).json({ error: "workspace_id is required" });
+    }
+    const subjectId = queryStr(req.query.subject_id) || "";
+    const objectId = queryStr(req.query.object_id) || "";
+    const predicate = queryStr(req.query.predicate) || "";
+    const limit = Math.min(Number(req.query.limit) || 50, 100);
+    const offset = Number(req.query.offset) || 0;
+
+    const supabase = getSupabaseClient();
+    let builder = supabase
+      .from("ontology_relations")
+      .select(RELATION_COLUMNS, { count: "exact" })
+      .eq("workspace_id", workspace_id)
+      .order("created_at", { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (subjectId) builder = builder.eq("subject_id", subjectId);
+    if (objectId) builder = builder.eq("object_id", objectId);
+    if (predicate) builder = builder.eq("predicate", predicate);
+
+    const { data, error, count } = await builder;
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+    return res.json({ relations: data ?? [], total: count ?? 0 });
+  } catch (error) {
+    return res.status(400).json({ error: getErrorMessage(error) });
+  }
+});
+
+// Create a relation
+app.post("/api/relations", async (req: Request, res: Response) => {
+  try {
+    const workspace_id =
+      queryStr(req.query.workspace_id) ||
+      process.env.DEFAULT_WORKSPACE_ID ||
+      "";
+    if (!workspace_id) {
+      return res.status(400).json({ error: "workspace_id is required" });
+    }
+    const { subject_id, predicate, object_id, attributes } = req.body as {
+      subject_id?: string;
+      predicate?: string;
+      object_id?: string;
+      attributes?: Record<string, unknown>;
+    };
+    if (!subject_id || !predicate || !object_id) {
+      return res.status(400).json({
+        error: "subject_id, predicate, and object_id are required",
+      });
+    }
+
+    const supabase = getSupabaseClient();
+    const endpointError = await verifyRelationEndpoints(
+      supabase,
+      workspace_id,
+      subject_id,
+      object_id,
+    );
+    if (endpointError) {
+      return res.status(400).json({ error: endpointError });
+    }
+
+    const { data, error } = await supabase
+      .from("ontology_relations")
+      .insert({
+        workspace_id,
+        subject_id,
+        predicate,
+        object_id,
+        attributes: attributes ?? {},
+      })
+      .select(RELATION_COLUMNS)
+      .single();
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+    return res.json({ relation: data });
+  } catch (error) {
+    return res.status(400).json({ error: getErrorMessage(error) });
+  }
+});
+
+// Update a relation's predicate or attributes. Endpoints are immutable —
+// re-pointing an edge is a delete plus a create, so the intent stays explicit.
+app.patch("/api/relations/:id", async (req: Request, res: Response) => {
+  try {
+    const id = queryStr(req.params.id);
+    const workspace_id =
+      queryStr(req.query.workspace_id) ||
+      process.env.DEFAULT_WORKSPACE_ID ||
+      "";
+    if (!workspace_id) {
+      return res.status(400).json({ error: "workspace_id is required" });
+    }
+    const { predicate, attributes } = req.body as {
+      predicate?: string;
+      attributes?: Record<string, unknown>;
+    };
+    if (predicate === undefined && attributes === undefined) {
+      return res
+        .status(400)
+        .json({ error: "predicate or attributes is required" });
+    }
+
+    const updates: Record<string, unknown> = {};
+    if (predicate !== undefined) updates.predicate = predicate;
+    if (attributes !== undefined) updates.attributes = attributes;
+
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+      .from("ontology_relations")
+      .update(updates)
+      .eq("id", id)
+      .eq("workspace_id", workspace_id)
+      .select(RELATION_COLUMNS)
+      .single();
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+    return res.json({ relation: data });
+  } catch (error) {
+    return res.status(400).json({ error: getErrorMessage(error) });
+  }
+});
+
+// Delete a relation
+app.delete("/api/relations/:id", async (req: Request, res: Response) => {
+  try {
+    const id = queryStr(req.params.id);
+    const workspace_id =
+      queryStr(req.query.workspace_id) ||
+      process.env.DEFAULT_WORKSPACE_ID ||
+      "";
+    if (!workspace_id) {
+      return res.status(400).json({ error: "workspace_id is required" });
+    }
+    const supabase = getSupabaseClient();
+    const { error } = await supabase
+      .from("ontology_relations")
+      .delete()
+      .eq("id", id)
+      .eq("workspace_id", workspace_id);
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+    return res.json({ ok: true });
+  } catch (error) {
+    return res.status(400).json({ error: getErrorMessage(error) });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Relation types — the workspace's vocabulary of predicates
+// ---------------------------------------------------------------------------
+
+app.get("/api/relation-types", async (req: Request, res: Response) => {
+  try {
+    const workspace_id =
+      queryStr(req.query.workspace_id) ||
+      process.env.DEFAULT_WORKSPACE_ID ||
+      "";
+    if (!workspace_id) {
+      return res.status(400).json({ error: "workspace_id is required" });
+    }
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+      .from("ontology_relation_types")
+      .select("id, predicate, label, created_at")
+      .eq("workspace_id", workspace_id)
+      .order("predicate", { ascending: true });
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+    return res.json({ relation_types: data ?? [] });
+  } catch (error) {
+    return res.status(400).json({ error: getErrorMessage(error) });
+  }
+});
+
+// Create or relabel a relation type. Upserts on (workspace_id, predicate)
+// so registering an already-known predicate updates its label instead of
+// failing on the unique constraint.
+app.post("/api/relation-types", async (req: Request, res: Response) => {
+  try {
+    const workspace_id =
+      queryStr(req.query.workspace_id) ||
+      process.env.DEFAULT_WORKSPACE_ID ||
+      "";
+    if (!workspace_id) {
+      return res.status(400).json({ error: "workspace_id is required" });
+    }
+    const { predicate, label } = req.body as {
+      predicate?: string;
+      label?: string;
+    };
+    if (!predicate) {
+      return res.status(400).json({ error: "predicate is required" });
+    }
+
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+      .from("ontology_relation_types")
+      .upsert(
+        { workspace_id, predicate, label: label ?? null },
+        { onConflict: "workspace_id, predicate" },
+      )
+      .select("id, predicate, label, created_at")
+      .single();
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+    return res.json({ relation_type: data });
+  } catch (error) {
+    return res.status(400).json({ error: getErrorMessage(error) });
+  }
+});
+
+// Delete a relation type. Existing relations using the predicate are left
+// alone — the predicate is free text, this only drops the label.
+app.delete("/api/relation-types/:id", async (req: Request, res: Response) => {
+  try {
+    const id = queryStr(req.params.id);
+    const workspace_id =
+      queryStr(req.query.workspace_id) ||
+      process.env.DEFAULT_WORKSPACE_ID ||
+      "";
+    if (!workspace_id) {
+      return res.status(400).json({ error: "workspace_id is required" });
+    }
+    const supabase = getSupabaseClient();
+    const { error } = await supabase
+      .from("ontology_relation_types")
       .delete()
       .eq("id", id)
       .eq("workspace_id", workspace_id);

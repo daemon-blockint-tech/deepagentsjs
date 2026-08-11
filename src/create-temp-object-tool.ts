@@ -1,8 +1,12 @@
+import process from "node:process"
+
 import { z } from "zod"
 import { tool } from "@langchain/core/tools"
 import { getSupabaseClient } from "./supabase.js"
 import { getCurrentUserId } from "./auth.js"
 import { withRetry, isTransientError } from "./fault-tolerance.js"
+import { upsertObjectChunk } from "./object-chunks.js"
+import { getErrorMessage } from "./utils.js"
 
 const DEFAULT_RETRY = {
   maxRetries: 2,
@@ -80,6 +84,22 @@ export const createTempObjectTool = tool(
           { onConflict: "workspace_id, object_id, key" }
         )
       }
+    }
+
+    // Make the draft semantically searchable so downstream specialists can
+    // find it by meaning, not just by exact query_ontology filters.
+    // Non-fatal: the object exists either way.
+    try {
+      await upsertObjectChunk(
+        workspace_id,
+        data.id,
+        display_name,
+        markedAttributes
+      )
+    } catch (err) {
+      process.stderr.write(
+        `create_temp_object: embedding failed for ${data.id}: ${getErrorMessage(err)}\n`
+      )
     }
 
     return JSON.stringify({

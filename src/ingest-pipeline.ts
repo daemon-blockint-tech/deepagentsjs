@@ -17,7 +17,7 @@ import process from "node:process";
 import { getSupabaseClient } from "./supabase.js";
 import { withRetry, isTransientError } from "./fault-tolerance.js";
 import { safeFetch, assertSafeLocalPath } from "./source-validation.js";
-import { embedText } from "./embeddings.js";
+import { upsertObjectChunk } from "./object-chunks.js";
 import { getErrorMessage } from "./utils.js";
 
 // ---------------------------------------------------------------------------
@@ -164,26 +164,7 @@ async function insertOntologyObject(
   // re-ingest later to retry the embedding.
   if (!skipEmbeddings) {
     try {
-      const embeddableAttrs: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(attributes)) {
-        if (k.startsWith("_")) continue;
-        if (v === null || v === undefined) continue;
-        embeddableAttrs[k] = v;
-      }
-      const chunkText = `${displayName}\n${JSON.stringify(embeddableAttrs)}`;
-      const embedding = await embedText(chunkText);
-      const { error: chunkError } = await supabase
-        .from("ontology_chunks")
-        .upsert(
-          {
-            workspace_id: workspaceId,
-            object_id: objectId,
-            content: chunkText,
-            embedding: JSON.stringify(embedding),
-          },
-          { onConflict: "workspace_id, object_id" },
-        );
-      if (chunkError) throw new Error(chunkError.message);
+      await upsertObjectChunk(workspaceId, objectId, displayName, attributes);
     } catch (embedErr) {
       // Graceful: object is ingested but not semantically searchable.
       // Re-throw as a soft error so the connector records it in

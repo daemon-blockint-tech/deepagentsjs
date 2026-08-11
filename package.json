@@ -22,7 +22,8 @@
     "dev": "tsx watch src/server.ts",
     "dev:server": "tsx watch src/server.ts",
     "dev:agent": "npx @langchain/langgraph-cli dev --port 2024",
-    "eval": "tsx src/eval.ts"
+    "eval": "tsx src/eval.ts",
+    "backfill:chunks": "tsx src/backfill-chunks.ts"
   },
   "homepage": "https://docs.langchain.com/oss/javascript/deepagents",
   "repository": {
