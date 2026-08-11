@@ -4,20 +4,29 @@ import { proposeActionTool } from "./tools.js";
 
 export interface AutomationContext {
   workspace_id: string;
-  trigger: "action_proposed" | "action_approved" | "action_rejected" | "action_executed" | "object_changed" | "schedule";
+  trigger:
+    | "action_proposed"
+    | "action_approved"
+    | "action_rejected"
+    | "action_executed"
+    | "object_changed"
+    | "schedule";
   action_type?: string;
   action_payload?: Record<string, unknown>;
   object_id?: string;
   object_type?: string;
 }
 
-async function proposeTemplatedAction(ctx: AutomationContext, automation: {
-  id: string;
-  workspace_id: string;
-  action_type: string;
-  action_payload_template: Record<string, unknown>;
-  trigger_config: Record<string, unknown>;
-}): Promise<string> {
+async function proposeTemplatedAction(
+  ctx: AutomationContext,
+  automation: {
+    id: string;
+    workspace_id: string;
+    action_type: string;
+    action_payload_template: Record<string, unknown>;
+    trigger_config: Record<string, unknown>;
+  },
+): Promise<string> {
   const config = automation.trigger_config ?? {};
   const template = automation.action_payload_template ?? {};
   const payload = { ...template };
@@ -43,7 +52,9 @@ async function proposeTemplatedAction(ctx: AutomationContext, automation: {
  * Evaluate matching automations for a trigger event.
  * For each active automation whose trigger matches, propose a templated action.
  */
-export async function evaluateAutomations(ctx: AutomationContext): Promise<string[]> {
+export async function evaluateAutomations(
+  ctx: AutomationContext,
+): Promise<string[]> {
   const supabase = getSupabaseClient();
   const userId = getCurrentUserId();
   if (!userId) {
@@ -52,7 +63,9 @@ export async function evaluateAutomations(ctx: AutomationContext): Promise<strin
 
   const { data, error } = await supabase
     .from("ontology_automations")
-    .select("id, workspace_id, action_type, action_payload_template, trigger_config")
+    .select(
+      "id, workspace_id, action_type, action_payload_template, trigger_config",
+    )
     .eq("workspace_id", ctx.workspace_id)
     .eq("trigger_type", ctx.trigger)
     .eq("is_active", true);
@@ -92,7 +105,9 @@ export async function processScheduledAutomations(): Promise<string[]> {
 
   const { data, error } = await supabase
     .from("ontology_automations")
-    .select("id, workspace_id, action_type, action_payload_template, trigger_config, last_run_at")
+    .select(
+      "id, workspace_id, action_type, action_payload_template, trigger_config, last_run_at",
+    )
     .eq("trigger_type", "schedule")
     .eq("is_active", true);
 
@@ -115,7 +130,7 @@ export async function processScheduledAutomations(): Promise<string[]> {
 
     const actionId = await proposeTemplatedAction(
       { workspace_id: automation.workspace_id, trigger: "schedule" },
-      automation
+      automation,
     );
     created.push(actionId);
 
@@ -137,7 +152,9 @@ export function startAutomationScheduler(intervalMs = 60000) {
       await processScheduledAutomations();
     } catch (err) {
       // Log and continue; do not crash the scheduler.
-      process.stderr.write(`Scheduler error: ${err instanceof Error ? err.message : String(err)}\n`);
+      process.stderr.write(
+        `Scheduler error: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
     }
   }, intervalMs);
 }

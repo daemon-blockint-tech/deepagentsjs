@@ -15,7 +15,6 @@ import { register } from "./metrics.js";
 import { getSupabaseClient } from "./supabase.js";
 import { approveAction, executeAction } from "./actions.js";
 import {
-  evaluateAutomations,
   startAutomationScheduler,
   stopAutomationScheduler,
 } from "./automations.js";
@@ -125,12 +124,9 @@ app.post("/api/actions/:id/approve", async (req: Request, res: Response) => {
     }
     const supabase = getSupabaseClient();
     await approveAction(supabase, id, workspace_id, approved === true);
-    const result = await evaluateAutomations({
-      workspace_id: workspace_id,
-      trigger: approved ? "action_approved" : "action_rejected",
-      action_type: undefined,
-    });
-    return res.json({ ok: true, automation_ids: result });
+    // Automations are now triggered by the Postgres NOTIFY listener
+    // (action_status_changed channel), not manually here.
+    return res.json({ ok: true });
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
   }
@@ -145,11 +141,185 @@ app.post("/api/actions/:id/execute", async (req: Request, res: Response) => {
     }
     const supabase = getSupabaseClient();
     await executeAction(supabase, id, workspace_id);
-    const result = await evaluateAutomations({
-      workspace_id: workspace_id,
-      trigger: "action_executed",
-    });
-    return res.json({ ok: true, automation_ids: result });
+    // Automations are now triggered by the Postgres NOTIFY listener
+    // (action_status_changed channel), not manually here.
+    return res.json({ ok: true });
+  } catch (error) {
+    return res.status(400).json({ error: getErrorMessage(error) });
+  }
+});
+
+// Ingest job history — list actions with type='ingest'
+app.get("/api/ingest", async (req: Request, res: Response) => {
+  try {
+    const workspace_id =
+      queryStr(req.query.workspace_id) ||
+      process.env.DEFAULT_WORKSPACE_ID ||
+      "";
+    if (!workspace_id) {
+      return res.status(400).json({ error: "workspace_id is required" });
+    }
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+      .from("actions")
+      .select("id, status, payload, created_at")
+      .eq("workspace_id", workspace_id)
+      .eq("type", "ingest")
+      .order("created_at", { ascending: false })
+      .limit(50);
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+    return res.json({ jobs: data ?? [] });
+  } catch (error) {
+    return res.status(400).json({ error: getErrorMessage(error) });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Automations CRUD — manage automation rules
+// ---------------------------------------------------------------------------
+
+app.get("/api/automations", async (req: Request, res: Response) => {
+  try {
+    const workspace_id =
+      queryStr(req.query.workspace_id) ||
+      process.env.DEFAULT_WORKSPACE_ID ||
+      "";
+    if (!workspace_id) {
+      return res.status(400).json({ error: "workspace_id is required" });
+    }
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+      .from("ontology_automations")
+      .select(
+        "id, workspace_id, name, trigger_type, trigger_config, action_type, action_payload_template, is_active, created_at, updated_at, last_run_at",
+      )
+      .eq("workspace_id", workspace_id)
+      .order("created_at", { ascending: false });
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+    return res.json({ automations: data ?? [] });
+  } catch (error) {
+    return res.status(400).json({ error: getErrorMessage(error) });
+  }
+});
+
+app.post("/api/automations", async (req: Request, res: Response) => {
+  try {
+    const workspace_id =
+      queryStr(req.query.workspace_id) ||
+      process.env.DEFAULT_WORKSPACE_ID ||
+      "";
+    if (!workspace_id) {
+      return res.status(400).json({ error: "workspace_id is required" });
+    }
+    const {
+      name,
+      trigger_type,
+      trigger_config,
+      action_type,
+      action_payload_template,
+      is_active,
+    } = req.body as {
+      name?: string;
+      trigger_type?: string;
+      trigger_config?: Record<string, unknown>;
+      action_type?: string;
+      action_payload_template?: Record<string, unknown>;
+      is_active?: boolean;
+    };
+    if (!name || !trigger_type || !action_type) {
+      return res
+        .status(400)
+        .json({ error: "name, trigger_type, and action_type are required" });
+    }
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+      .from("ontology_automations")
+      .insert({
+        workspace_id,
+        name,
+        trigger_type,
+        trigger_config: trigger_config ?? {},
+        action_type,
+        action_payload_template: action_payload_template ?? {},
+        is_active: is_active ?? true,
+      })
+      .select(
+        "id, workspace_id, name, trigger_type, trigger_config, action_type, action_payload_template, is_active, created_at",
+      )
+      .single();
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+    return res.json({ automation: data });
+  } catch (error) {
+    return res.status(400).json({ error: getErrorMessage(error) });
+  }
+});
+
+app.patch("/api/automations/:id", async (req: Request, res: Response) => {
+  try {
+    const id = queryStr(req.params.id);
+    const workspace_id =
+      queryStr(req.query.workspace_id) ||
+      process.env.DEFAULT_WORKSPACE_ID ||
+      "";
+    if (!workspace_id) {
+      return res.status(400).json({ error: "workspace_id is required" });
+    }
+    const updates = req.body as {
+      name?: string;
+      trigger_type?: string;
+      trigger_config?: Record<string, unknown>;
+      action_type?: string;
+      action_payload_template?: Record<string, unknown>;
+      is_active?: boolean;
+    };
+    const supabase = getSupabaseClient();
+    const { data, error } = await supabase
+      .from("ontology_automations")
+      .update({
+        ...updates,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", id)
+      .eq("workspace_id", workspace_id)
+      .select(
+        "id, workspace_id, name, trigger_type, trigger_config, action_type, action_payload_template, is_active, updated_at",
+      )
+      .single();
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+    return res.json({ automation: data });
+  } catch (error) {
+    return res.status(400).json({ error: getErrorMessage(error) });
+  }
+});
+
+app.delete("/api/automations/:id", async (req: Request, res: Response) => {
+  try {
+    const id = queryStr(req.params.id);
+    const workspace_id =
+      queryStr(req.query.workspace_id) ||
+      process.env.DEFAULT_WORKSPACE_ID ||
+      "";
+    if (!workspace_id) {
+      return res.status(400).json({ error: "workspace_id is required" });
+    }
+    const supabase = getSupabaseClient();
+    const { error } = await supabase
+      .from("ontology_automations")
+      .delete()
+      .eq("id", id)
+      .eq("workspace_id", workspace_id);
+    if (error) {
+      return res.status(400).json({ error: error.message });
+    }
+    return res.json({ ok: true });
   } catch (error) {
     return res.status(400).json({ error: getErrorMessage(error) });
   }

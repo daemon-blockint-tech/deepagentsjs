@@ -17,6 +17,7 @@ import process from "node:process";
 import { getSupabaseClient } from "./supabase.js";
 import { withRetry, isTransientError } from "./fault-tolerance.js";
 import { safeFetch, assertSafeLocalPath } from "./source-validation.js";
+import { embedText } from "./embeddings.js";
 import { getErrorMessage } from "./utils.js";
 
 // ---------------------------------------------------------------------------
@@ -70,6 +71,7 @@ async function insertOntologyObject(
   externalId: string,
   displayName: string,
   attributes: Record<string, unknown>,
+  skipEmbeddings: boolean,
 ): Promise<string> {
   const supabase = getSupabaseClient();
 
@@ -155,7 +157,69 @@ async function insertOntologyObject(
     if (propError) throw new Error(propError.message);
   }
 
+  // Generate an embedding and upsert a chunk into ontology_chunks so the
+  // object is semantically searchable via semantic_search (pgvector).
+  // Embedding failure is graceful: the object is already in the ontology,
+  // so we record a warning but don't fail the ingest. The caller can
+  // re-ingest later to retry the embedding.
+  if (!skipEmbeddings) {
+    try {
+      const embeddableAttrs: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(attributes)) {
+        if (k.startsWith("_")) continue;
+        if (v === null || v === undefined) continue;
+        embeddableAttrs[k] = v;
+      }
+      const chunkText = `${displayName}\n${JSON.stringify(embeddableAttrs)}`;
+      const embedding = await embedText(chunkText);
+      const { error: chunkError } = await supabase
+        .from("ontology_chunks")
+        .upsert(
+          {
+            workspace_id: workspaceId,
+            object_id: objectId,
+            content: chunkText,
+            embedding: JSON.stringify(embedding),
+          },
+          { onConflict: "workspace_id, object_id" },
+        );
+      if (chunkError) throw new Error(chunkError.message);
+    } catch (embedErr) {
+      // Graceful: object is ingested but not semantically searchable.
+      // Re-throw as a soft error so the connector records it in
+      // result.errors without aborting the whole ingest.
+      throw new EmbeddingError(
+        `Embedding failed for ${externalId}: ${getErrorMessage(embedErr)}`,
+      );
+    }
+  }
+
   return objectId;
+}
+
+/**
+ * Soft error class for embedding failures. The connector catches this
+ * separately from hard errors: the object IS in the ontology, it's just
+ * not semantically searchable. The row is counted as ingested.
+ */
+class EmbeddingError extends Error {
+  readonly isEmbeddingError = true;
+  constructor(message: string) {
+    super(message);
+    this.name = "EmbeddingError";
+  }
+}
+
+/**
+ * Type guard for EmbeddingError without using instanceof.
+ * Checks for the `isEmbeddingError` marker property.
+ */
+function isEmbeddingError(err: unknown): err is EmbeddingError {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err as { isEmbeddingError?: unknown }).isEmbeddingError === true
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -248,6 +312,12 @@ export interface CsvConnectorOptions {
    * CSV column to use as the external_id. Falls back to a generated id.
    */
   externalIdColumn?: string;
+  /**
+   * Skip embedding generation. The object is ingested but not
+   * semantically searchable. Useful for tests or when the embedding
+   * API is unavailable.
+   */
+  skipEmbeddings?: boolean;
 }
 
 export class CsvConnector implements IngestConnector {
@@ -262,6 +332,7 @@ export class CsvConnector implements IngestConnector {
       fieldMapping = {},
       displayNameColumn,
       externalIdColumn,
+      skipEmbeddings = false,
     } = this.opts;
 
     let text: string;
@@ -313,11 +384,18 @@ export class CsvConnector implements IngestConnector {
               externalId,
               displayName,
               attributes,
+              skipEmbeddings,
             ),
           DEFAULT_RETRY,
         )();
         ingested++;
       } catch (err) {
+        // Embedding errors are soft: the object was ingested, it's just
+        // not semantically searchable. Count it as ingested but record
+        // a warning so the operator knows to re-ingest.
+        if (isEmbeddingError(err)) {
+          ingested++;
+        }
         errors.push(`Row ${i + 1}: ${getErrorMessage(err)}`);
       }
     }
@@ -347,6 +425,12 @@ export interface JsonApiConnectorOptions {
   externalIdField?: string;
   /** Optional headers to send with the fetch request. */
   headers?: Record<string, string>;
+  /**
+   * Skip embedding generation. The object is ingested but not
+   * semantically searchable. Useful for tests or when the embedding
+   * API is unavailable.
+   */
+  skipEmbeddings?: boolean;
 }
 
 export class JsonApiConnector implements IngestConnector {
@@ -362,6 +446,7 @@ export class JsonApiConnector implements IngestConnector {
       displayNameField,
       externalIdField,
       headers = {},
+      skipEmbeddings = false,
     } = this.opts;
 
     const res = await safeFetch(url, { headers });
@@ -421,11 +506,18 @@ export class JsonApiConnector implements IngestConnector {
               externalId,
               String(displayName),
               attributes,
+              skipEmbeddings,
             ),
           DEFAULT_RETRY,
         )();
         ingested++;
       } catch (err) {
+        // Embedding errors are soft: the object was ingested, it's just
+        // not semantically searchable. Count it as ingested but record
+        // a warning so the operator knows to re-ingest.
+        if (isEmbeddingError(err)) {
+          ingested++;
+        }
         errors.push(`Item ${i + 1}: ${getErrorMessage(err)}`);
       }
     }

@@ -21,6 +21,18 @@ vi.mock("./source-validation.js", () => ({
   assertSafeLocalPath: vi.fn(async (p: string) => p),
 }));
 
+// Mock embeddings so tests don't call the real OpenRouter API.
+vi.mock("./embeddings.js", () => ({
+  embedText: vi.fn(async (text: string) => {
+    // Return a deterministic 1536-dim vector based on the text hash.
+    const embedding = new Array(1536).fill(0);
+    for (let i = 0; i < text.length; i++) {
+      embedding[i % 1536] += text.charCodeAt(i) / 1000;
+    }
+    return embedding;
+  }),
+}));
+
 import {
   CsvConnector,
   JsonApiConnector,
@@ -29,6 +41,7 @@ import {
 } from "./ingest-pipeline.js";
 import { getSupabaseClient } from "./supabase.js";
 import { safeFetch } from "./source-validation.js";
+import { embedText } from "./embeddings.js";
 
 // ---------------------------------------------------------------------------
 // Mock supabase client: a single chainable object per table, with shared
@@ -371,6 +384,9 @@ describe("CsvConnector", () => {
       ontology_properties: {
         resolveResult: () => ({ data: null, error: null }),
       },
+      ontology_chunks: {
+        resolveResult: () => ({ data: null, error: null }),
+      },
     });
     vi.mocked(getSupabaseClient).mockReturnValue(
       mock as unknown as ReturnType<typeof getSupabaseClient>,
@@ -380,6 +396,7 @@ describe("CsvConnector", () => {
       source: csvPath,
       objectType: "person",
       externalIdColumn: "name",
+      skipEmbeddings: true,
     });
     const result = await connector.ingest("ws-1");
 
@@ -408,6 +425,9 @@ describe("CsvConnector", () => {
       ontology_properties: {
         resolveResult: () => ({ data: null, error: null }),
       },
+      ontology_chunks: {
+        resolveResult: () => ({ data: null, error: null }),
+      },
     });
     vi.mocked(getSupabaseClient).mockReturnValue(
       mock as unknown as ReturnType<typeof getSupabaseClient>,
@@ -416,6 +436,7 @@ describe("CsvConnector", () => {
     const connector = new CsvConnector({
       source: "https://example.com/data.csv",
       objectType: "person",
+      skipEmbeddings: true,
     });
     const result = await connector.ingest("ws-1");
 
@@ -441,6 +462,9 @@ describe("CsvConnector", () => {
       ontology_properties: {
         resolveResult: () => ({ data: null, error: null }),
       },
+      ontology_chunks: {
+        resolveResult: () => ({ data: null, error: null }),
+      },
     });
     vi.mocked(getSupabaseClient).mockReturnValue(
       mock as unknown as ReturnType<typeof getSupabaseClient>,
@@ -450,6 +474,7 @@ describe("CsvConnector", () => {
       source: csvPath,
       objectType: "person",
       externalIdColumn: "name",
+      skipEmbeddings: true,
     });
     const result = await connector.ingest("ws-1");
 
@@ -479,6 +504,9 @@ describe("JsonApiConnector", () => {
       ontology_properties: {
         resolveResult: () => ({ data: null, error: null }),
       },
+      ontology_chunks: {
+        resolveResult: () => ({ data: null, error: null }),
+      },
     });
     vi.mocked(getSupabaseClient).mockReturnValue(
       mock as unknown as ReturnType<typeof getSupabaseClient>,
@@ -488,6 +516,7 @@ describe("JsonApiConnector", () => {
       url: "https://api.example.com/items",
       objectType: "thing",
       externalIdField: "id",
+      skipEmbeddings: true,
     });
     const result = await connector.ingest("ws-1");
 
@@ -510,6 +539,9 @@ describe("JsonApiConnector", () => {
       ontology_properties: {
         resolveResult: () => ({ data: null, error: null }),
       },
+      ontology_chunks: {
+        resolveResult: () => ({ data: null, error: null }),
+      },
     });
     vi.mocked(getSupabaseClient).mockReturnValue(
       mock as unknown as ReturnType<typeof getSupabaseClient>,
@@ -519,6 +551,7 @@ describe("JsonApiConnector", () => {
       url: "https://api.example.com/data",
       objectType: "thing",
       externalIdField: "id",
+      skipEmbeddings: true,
     });
     const result = await connector.ingest("ws-1");
 
@@ -540,6 +573,9 @@ describe("JsonApiConnector", () => {
       ontology_properties: {
         resolveResult: () => ({ data: null, error: null }),
       },
+      ontology_chunks: {
+        resolveResult: () => ({ data: null, error: null }),
+      },
     });
     vi.mocked(getSupabaseClient).mockReturnValue(
       mock as unknown as ReturnType<typeof getSupabaseClient>,
@@ -548,6 +584,7 @@ describe("JsonApiConnector", () => {
     const connector = new JsonApiConnector({
       url: "https://api.example.com/bad",
       objectType: "thing",
+      skipEmbeddings: true,
     });
     await expect(connector.ingest("ws-1")).rejects.toThrow(/not an array/);
   });
@@ -564,6 +601,9 @@ describe("JsonApiConnector", () => {
       ontology_properties: {
         resolveResult: () => ({ data: null, error: null }),
       },
+      ontology_chunks: {
+        resolveResult: () => ({ data: null, error: null }),
+      },
     });
     vi.mocked(getSupabaseClient).mockReturnValue(
       mock as unknown as ReturnType<typeof getSupabaseClient>,
@@ -572,6 +612,7 @@ describe("JsonApiConnector", () => {
     const connector = new JsonApiConnector({
       url: "https://api.example.com/missing",
       objectType: "thing",
+      skipEmbeddings: true,
     });
     await expect(connector.ingest("ws-1")).rejects.toThrow(/404/);
   });
@@ -602,6 +643,9 @@ describe("insertOntologyObject stale-property cleanup", () => {
         ontology_properties: {
           resolveResult: () => ({ data: null, error: null }),
         },
+        ontology_chunks: {
+          resolveResult: () => ({ data: null, error: null }),
+        },
       });
       vi.mocked(getSupabaseClient).mockReturnValue(
         mock as unknown as ReturnType<typeof getSupabaseClient>,
@@ -611,6 +655,7 @@ describe("insertOntologyObject stale-property cleanup", () => {
         source: csvPath,
         objectType: "person",
         externalIdColumn: "name",
+        skipEmbeddings: true,
       });
       await connector.ingest(WORKSPACE_ID);
 
@@ -657,6 +702,9 @@ describe("insertOntologyObject stale-property cleanup", () => {
         ontology_properties: {
           resolveResult: () => ({ data: null, error: null }),
         },
+        ontology_chunks: {
+          resolveResult: () => ({ data: null, error: null }),
+        },
       });
       vi.mocked(getSupabaseClient).mockReturnValue(
         mock as unknown as ReturnType<typeof getSupabaseClient>,
@@ -665,6 +713,7 @@ describe("insertOntologyObject stale-property cleanup", () => {
       const connector = new CsvConnector({
         source: csvPath,
         objectType: "person",
+        skipEmbeddings: true,
       });
       await connector.ingest(WORKSPACE_ID);
 
@@ -714,6 +763,9 @@ describe("insertOntologyObject object_type mismatch guard", () => {
         ontology_properties: {
           resolveResult: () => ({ data: null, error: null }),
         },
+        ontology_chunks: {
+          resolveResult: () => ({ data: null, error: null }),
+        },
       });
       vi.mocked(getSupabaseClient).mockReturnValue(
         mock as unknown as ReturnType<typeof getSupabaseClient>,
@@ -723,6 +775,7 @@ describe("insertOntologyObject object_type mismatch guard", () => {
         source: csvPath,
         objectType: "person", // different from existing "company"
         externalIdColumn: "name",
+        skipEmbeddings: true,
       });
       const result = await connector.ingest(WORKSPACE_ID);
 
@@ -765,6 +818,9 @@ describe("insertOntologyObject object_type mismatch guard", () => {
         ontology_properties: {
           resolveResult: () => ({ data: null, error: null }),
         },
+        ontology_chunks: {
+          resolveResult: () => ({ data: null, error: null }),
+        },
       });
       vi.mocked(getSupabaseClient).mockReturnValue(
         mock as unknown as ReturnType<typeof getSupabaseClient>,
@@ -774,6 +830,7 @@ describe("insertOntologyObject object_type mismatch guard", () => {
         source: csvPath,
         objectType: "person",
         externalIdColumn: "name",
+        skipEmbeddings: true,
       });
       const result = await connector.ingest(WORKSPACE_ID);
 
@@ -784,5 +841,178 @@ describe("insertOntologyObject object_type mismatch guard", () => {
       process.env.INGEST_DATA_DIR = oldEnv;
       await rm(tempDir, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Embedding generation on ingest
+// ---------------------------------------------------------------------------
+
+describe("Embedding generation on ingest", () => {
+  let tempDir: string;
+  let ingestDir: string;
+  let oldEnv: string | undefined;
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "ingest-embed-"));
+    ingestDir = join(tempDir, "ingest");
+    await mkdir(ingestDir, { recursive: true });
+    oldEnv = process.env.INGEST_DATA_DIR;
+    process.env.INGEST_DATA_DIR = ingestDir;
+  });
+
+  afterEach(async () => {
+    process.env.INGEST_DATA_DIR = oldEnv;
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  it("generates an embedding and upserts into ontology_chunks on ingest", async () => {
+    const csvPath = join(ingestDir, "data.csv");
+    await writeFile(csvPath, "name,age\nAlice,30\n");
+
+    const mock = makeSupabaseMock({
+      ontology_objects: {
+        resolveResult: () => ({ data: { id: "obj-1" }, error: null }),
+      },
+      ontology_properties: {
+        resolveResult: () => ({ data: null, error: null }),
+      },
+      ontology_chunks: {
+        resolveResult: () => ({ data: null, error: null }),
+      },
+    });
+    vi.mocked(getSupabaseClient).mockReturnValue(
+      mock as unknown as ReturnType<typeof getSupabaseClient>,
+    );
+
+    const connector = new CsvConnector({
+      source: csvPath,
+      objectType: "person",
+      externalIdColumn: "name",
+      // skipEmbeddings defaults to false — embeddings should be generated
+    });
+    const result = await connector.ingest("ws-1");
+
+    expect(result.ingested).toBe(1);
+    expect(result.errors).toEqual([]);
+
+    // embedText was called with display_name + JSON of attributes
+    expect(embedText).toHaveBeenCalledTimes(1);
+    const embeddedText = vi.mocked(embedText).mock.calls[0][0];
+    expect(embeddedText).toContain("Alice");
+    expect(embeddedText).toContain("age");
+
+    // ontology_chunks upsert was called with the correct fields
+    expect(mock.spies.ontology_chunks.upsert.mock.calls).toHaveLength(1);
+    const chunkUpsert = mock.spies.ontology_chunks.upsert.mock
+      .calls[0][0] as Record<string, unknown>;
+    expect(chunkUpsert.object_id).toBe("obj-1");
+    expect(chunkUpsert.workspace_id).toBe("ws-1");
+    expect(chunkUpsert.content).toBe(embeddedText);
+    expect(chunkUpsert.embedding).toBeTypeOf("string"); // JSON string of the vector
+  });
+
+  it("records a soft error when embedding fails but still counts the object as ingested", async () => {
+    const csvPath = join(ingestDir, "data.csv");
+    await writeFile(csvPath, "name,age\nAlice,30\n");
+
+    // Make embedText throw
+    vi.mocked(embedText).mockRejectedValueOnce(new Error("API rate limited"));
+
+    const mock = makeSupabaseMock({
+      ontology_objects: {
+        resolveResult: () => ({ data: { id: "obj-1" }, error: null }),
+      },
+      ontology_properties: {
+        resolveResult: () => ({ data: null, error: null }),
+      },
+      ontology_chunks: {
+        resolveResult: () => ({ data: null, error: null }),
+      },
+    });
+    vi.mocked(getSupabaseClient).mockReturnValue(
+      mock as unknown as ReturnType<typeof getSupabaseClient>,
+    );
+
+    const connector = new CsvConnector({
+      source: csvPath,
+      objectType: "person",
+      externalIdColumn: "name",
+    });
+    const result = await connector.ingest("ws-1");
+
+    // Object was ingested despite embedding failure
+    expect(result.ingested).toBe(1);
+    // Error is recorded so the operator knows
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toMatch(/Embedding failed.*API rate limited/);
+  });
+
+  it("skips embedding entirely when skipEmbeddings is true", async () => {
+    const csvPath = join(ingestDir, "data.csv");
+    await writeFile(csvPath, "name,age\nAlice,30\n");
+
+    const mock = makeSupabaseMock({
+      ontology_objects: {
+        resolveResult: () => ({ data: { id: "obj-1" }, error: null }),
+      },
+      ontology_properties: {
+        resolveResult: () => ({ data: null, error: null }),
+      },
+      ontology_chunks: {
+        resolveResult: () => ({ data: null, error: null }),
+      },
+    });
+    vi.mocked(getSupabaseClient).mockReturnValue(
+      mock as unknown as ReturnType<typeof getSupabaseClient>,
+    );
+
+    const connector = new CsvConnector({
+      source: csvPath,
+      objectType: "person",
+      externalIdColumn: "name",
+      skipEmbeddings: true,
+    });
+    const result = await connector.ingest("ws-1");
+
+    expect(result.ingested).toBe(1);
+    expect(result.errors).toEqual([]);
+
+    // embedText was NOT called
+    expect(embedText).not.toHaveBeenCalled();
+    // ontology_chunks upsert was NOT called
+    expect(mock.spies.ontology_chunks.upsert.mock.calls).toHaveLength(0);
+  });
+
+  it("uses correct object_id and workspace_id in the chunk upsert", async () => {
+    const csvPath = join(ingestDir, "data.csv");
+    await writeFile(csvPath, "name,age\nBob,25\n");
+
+    const mock = makeSupabaseMock({
+      ontology_objects: {
+        resolveResult: () => ({ data: { id: "obj-bob" }, error: null }),
+      },
+      ontology_properties: {
+        resolveResult: () => ({ data: null, error: null }),
+      },
+      ontology_chunks: {
+        resolveResult: () => ({ data: null, error: null }),
+      },
+    });
+    vi.mocked(getSupabaseClient).mockReturnValue(
+      mock as unknown as ReturnType<typeof getSupabaseClient>,
+    );
+
+    const connector = new CsvConnector({
+      source: csvPath,
+      objectType: "person",
+      externalIdColumn: "name",
+    });
+    await connector.ingest("ws-bob-test");
+
+    const chunkUpsert = mock.spies.ontology_chunks.upsert.mock
+      .calls[0][0] as Record<string, unknown>;
+    expect(chunkUpsert.object_id).toBe("obj-bob");
+    expect(chunkUpsert.workspace_id).toBe("ws-bob-test");
   });
 });
