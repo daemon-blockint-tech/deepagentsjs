@@ -20,6 +20,7 @@ describe("tools.ts workspace authorization", () => {
       select: vi.fn().mockReturnThis(),
       eq: vi.fn().mockReturnThis(),
       single: vi.fn().mockResolvedValue(singleResult),
+      maybeSingle: vi.fn().mockResolvedValue(singleResult),
     };
     const chain = {
       from: vi.fn((table: string) => {
@@ -46,7 +47,9 @@ describe("tools.ts workspace authorization", () => {
 
   it("propose_action throws when user is not workspace member", async () => {
     auth.setCurrentUserId("user-123");
-    const { query } = membershipQuery({ data: null, error: { message: "not found" } });
+    // maybeSingle returns a null row with no error when there is no
+    // membership — an error object would mean the query itself failed.
+    const { query } = membershipQuery({ data: null, error: null });
     query.eq.mockReturnThis();
 
     await expect(
@@ -78,9 +81,22 @@ describe("tools.ts workspace authorization", () => {
     expect(result).toContain("action-1");
   });
 
+  it("propose_action distinguishes a failed membership query from a denial", async () => {
+    auth.setCurrentUserId("user-123");
+    membershipQuery({ data: null, error: { message: "connection reset" } });
+
+    await expect(
+      proposeActionTool.invoke({
+        workspace_id: "550e8400-e29b-41d4-a716-446655440000",
+        type: "test",
+        payload: {},
+      })
+    ).rejects.toThrow(/membership check failed: connection reset/);
+  });
+
   it("query_ontology throws when user is not workspace member", async () => {
     auth.setCurrentUserId("user-123");
-    membershipQuery({ data: null, error: { message: "not found" } });
+    membershipQuery({ data: null, error: null });
 
     await expect(
       queryOntologyTool.invoke({

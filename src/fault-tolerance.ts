@@ -86,6 +86,14 @@ export function isTransientError(error: unknown): boolean {
       "503",
       "502",
       "500",
+      // Node's fetch surfaces network blips as a bare "fetch failed" with
+      // the real cause nested. Without these, a momentary hiccup during
+      // ingest permanently leaves the object unembedded.
+      "fetch failed",
+      "econnreset",
+      "socket hang up",
+      "etimedout",
+      "eai_again",
     ];
     const msg = error.message.toLowerCase();
     return transient.some((t) => msg.includes(t));

@@ -3,7 +3,7 @@ import process from "node:process"
 import { z } from "zod"
 import { tool } from "@langchain/core/tools"
 import { getSupabaseClient } from "./supabase.js"
-import { getCurrentUserId } from "./auth.js"
+import { verifyWorkspaceMembership } from "./auth.js"
 import { withRetry, isTransientError } from "./fault-tolerance.js"
 import { upsertObjectChunk } from "./object-chunks.js"
 import { getErrorMessage } from "./utils.js"
@@ -13,21 +13,6 @@ const DEFAULT_RETRY = {
   initialDelayMs: 500,
   backoffFactor: 2,
   retryOn: isTransientError,
-}
-
-async function verifyWorkspaceMembership(
-  supabase: ReturnType<typeof getSupabaseClient>,
-  workspaceId: string
-) {
-  const userId = getCurrentUserId()
-  if (!userId) throw new Error("Unauthorized: no current user")
-  const { data, error } = await supabase
-    .from("workspace_members")
-    .select("id")
-    .eq("workspace_id", workspaceId)
-    .eq("user_id", userId)
-    .single()
-  if (error || !data) throw new Error("Workspace access denied")
 }
 
 /**

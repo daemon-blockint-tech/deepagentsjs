@@ -1,5 +1,5 @@
 import { getSupabaseClient } from "./supabase.js";
-import { getCurrentUserId } from "./auth.js";
+import { verifyWorkspaceMembership } from "./auth.js";
 import { queryOntologyTool, proposeActionTool } from "./tools.js";
 
 export interface OntologyInterface {
@@ -11,26 +11,6 @@ export interface OntologyInterface {
   property_whitelist: string[];
   required_properties: string[];
   markings: string[];
-}
-
-async function verifyWorkspaceMembership(
-  supabase: ReturnType<typeof getSupabaseClient>,
-  workspaceId: string
-) {
-  const userId = getCurrentUserId();
-  if (!userId) {
-    throw new Error("Unauthorized: no current user");
-  }
-  const { data, error } = await supabase
-    .from("workspace_members")
-    .select("id")
-    .eq("workspace_id", workspaceId)
-    .eq("user_id", userId)
-    .single();
-
-  if (error || !data) {
-    throw new Error("Workspace access denied");
-  }
 }
 
 async function loadInterface(

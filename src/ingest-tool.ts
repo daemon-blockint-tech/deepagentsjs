@@ -11,7 +11,7 @@ import { z } from "zod";
 import { tool } from "@langchain/core/tools";
 
 import { getSupabaseClient } from "./supabase.js";
-import { getCurrentUserId } from "./auth.js";
+import { verifyWorkspaceMembership } from "./auth.js";
 import { withRetry, isTransientError } from "./fault-tolerance.js";
 import {
   CsvConnector,
@@ -27,26 +27,6 @@ const DEFAULT_RETRY = {
   backoffFactor: 2,
   retryOn: isTransientError,
 };
-
-async function verifyWorkspaceMembership(
-  supabase: ReturnType<typeof getSupabaseClient>,
-  workspaceId: string,
-) {
-  const userId = getCurrentUserId();
-  if (!userId) {
-    throw new Error("Unauthorized: no current user");
-  }
-  const { data, error } = await supabase
-    .from("workspace_members")
-    .select("id")
-    .eq("workspace_id", workspaceId)
-    .eq("user_id", userId)
-    .single();
-
-  if (error || !data) {
-    throw new Error("Workspace access denied");
-  }
-}
 
 /**
  * Build the appropriate connector from the tool parameters.

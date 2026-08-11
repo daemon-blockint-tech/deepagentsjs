@@ -1,26 +1,6 @@
 import { embedText } from "./embeddings.js";
 import { getSupabaseClient } from "./supabase.js";
-import { getCurrentUserId } from "./auth.js";
-
-async function verifyWorkspaceMembership(
-  supabase: ReturnType<typeof getSupabaseClient>,
-  workspaceId: string
-) {
-  const userId = getCurrentUserId();
-  if (!userId) {
-    throw new Error("Unauthorized: no current user");
-  }
-  const { data, error } = await supabase
-    .from("workspace_members")
-    .select("id")
-    .eq("workspace_id", workspaceId)
-    .eq("user_id", userId)
-    .single();
-
-  if (error || !data) {
-    throw new Error("Workspace access denied");
-  }
-}
+import { verifyWorkspaceMembership } from "./auth.js";
 
 /**
  * Semantically search ontology chunks for a workspace using pgvector.

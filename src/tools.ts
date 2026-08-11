@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { tool } from "@langchain/core/tools";
 import { getSupabaseClient } from "./supabase.js";
-import { getCurrentUserId } from "./auth.js";
+import { verifyWorkspaceMembership } from "./auth.js";
 import { withRetry, isTransientError } from "./fault-tolerance.js";
 
 const MAX_ONTOLOGY_LIMIT = 50;
@@ -11,23 +11,6 @@ const DEFAULT_RETRY = { maxRetries: 2, initialDelayMs: 500, backoffFactor: 2, re
 function sanitizeSearch(value: string): string {
   // Strip Postgres ILIKE wildcard characters so the search is always a literal substring.
   return value.replace(/[%_]/g, "");
-}
-
-async function verifyWorkspaceMembership(supabase: ReturnType<typeof getSupabaseClient>, workspaceId: string) {
-  const userId = getCurrentUserId();
-  if (!userId) {
-    throw new Error("Unauthorized: no current user");
-  }
-  const { data, error } = await supabase
-    .from("workspace_members")
-    .select("id")
-    .eq("workspace_id", workspaceId)
-    .eq("user_id", userId)
-    .single();
-
-  if (error || !data) {
-    throw new Error("Workspace access denied");
-  }
 }
 
 export const queryOntologyTool = tool(
