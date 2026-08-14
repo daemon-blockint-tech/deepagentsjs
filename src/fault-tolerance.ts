@@ -9,7 +9,7 @@ export interface RetryOptions {
 
 export function withRetry<TArgs extends unknown[], TReturn>(
   fn: (...args: TArgs) => Promise<TReturn>,
-  options: RetryOptions
+  options: RetryOptions,
 ): (...args: TArgs) => Promise<TReturn> {
   return async (...args) => {
     let delay = options.initialDelayMs;
@@ -49,7 +49,7 @@ export class CallLimiter {
 
 export function withCallLimit<TArgs extends unknown[], TReturn>(
   fn: (...args: TArgs) => Promise<TReturn>,
-  limiter: CallLimiter
+  limiter: CallLimiter,
 ): (...args: TArgs) => Promise<TReturn> {
   return async (...args) => {
     limiter.check();
@@ -64,7 +64,7 @@ export interface FallbackOptions<TArgs extends unknown[], TReturn> {
 }
 
 export function withFallback<TArgs extends unknown[], TReturn>(
-  options: FallbackOptions<TArgs, TReturn>
+  options: FallbackOptions<TArgs, TReturn>,
 ): (...args: TArgs) => Promise<TReturn> {
   return async (...args) => {
     try {
@@ -77,7 +77,8 @@ export function withFallback<TArgs extends unknown[], TReturn>(
 }
 
 export function isTransientError(error: unknown): boolean {
-  if (error instanceof Error) {
+  const message = (error as { message?: unknown } | undefined)?.message;
+  if (typeof message === "string") {
     const transient = [
       "timeout",
       "rate limit",
@@ -95,7 +96,7 @@ export function isTransientError(error: unknown): boolean {
       "etimedout",
       "eai_again",
     ];
-    const msg = error.message.toLowerCase();
+    const msg = message.toLowerCase();
     return transient.some((t) => msg.includes(t));
   }
   return false;

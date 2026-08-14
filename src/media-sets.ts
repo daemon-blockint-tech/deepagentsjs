@@ -1,5 +1,4 @@
 import { getSupabaseClient } from "./supabase.js";
-import { getCurrentUserId } from "./auth.js";
 
 export interface CreateMediaSetInput {
   workspace_id: string;
@@ -21,7 +20,8 @@ export async function createMediaSet(input: CreateMediaSetInput) {
     .select("id, workspace_id, name, description, metadata, created_at")
     .single();
 
-  if (error || !data) throw new Error(error?.message || "Failed to create media set");
+  if (error || !data)
+    throw new Error(error?.message || "Failed to create media set");
   return data;
 }
 
@@ -43,7 +43,8 @@ export async function addMediaSetItem(input: AddMediaSetItemInput) {
     .select("id, set_id, item_id, item_type, created_at")
     .single();
 
-  if (error || !data) throw new Error(error?.message || "Failed to add item to media set");
+  if (error || !data)
+    throw new Error(error?.message || "Failed to add item to media set");
   return data;
 }
 
@@ -58,11 +59,15 @@ export interface MediaSetWithItems {
   items: unknown[];
 }
 
-export async function getMediaSet(setId: string): Promise<MediaSetWithItems | null> {
+export async function getMediaSet(
+  setId: string,
+): Promise<MediaSetWithItems | null> {
   const supabase = getSupabaseClient();
   const { data: set, error } = await supabase
     .from("media_sets")
-    .select("id, workspace_id, name, description, metadata, created_at, updated_at")
+    .select(
+      "id, workspace_id, name, description, metadata, created_at, updated_at",
+    )
     .eq("id", setId)
     .single();
 

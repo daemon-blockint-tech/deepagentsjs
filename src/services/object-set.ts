@@ -86,12 +86,16 @@ export async function queryObjectSet(input: ObjectSetQuery): Promise<{
   }
 
   for (const f of input.filters ?? []) {
-    countBuilder = countBuilder.filter("attributes->>" + f.column, f.op, f.value);
+    countBuilder = countBuilder.filter(
+      "attributes->>" + f.column,
+      f.op,
+      f.value,
+    );
   }
 
   if (input.search) {
     countBuilder = countBuilder.or(
-      `display_name.ilike.%${input.search}%,external_id.ilike.%${input.search}%`
+      `display_name.ilike.%${input.search}%,external_id.ilike.%${input.search}%`,
     );
   }
 
@@ -101,7 +105,9 @@ export async function queryObjectSet(input: ObjectSetQuery): Promise<{
   // Data query
   let builder = supabase
     .from("ontology_objects")
-    .select("id, object_type, external_id, display_name, attributes, created_at, updated_at")
+    .select(
+      "id, object_type, external_id, display_name, attributes, created_at, updated_at",
+    )
     .eq("workspace_id", input.workspace_id);
 
   if (input.object_type) {
@@ -117,15 +123,22 @@ export async function queryObjectSet(input: ObjectSetQuery): Promise<{
 
   if (input.search) {
     builder = builder.or(
-      `display_name.ilike.%${input.search}%,external_id.ilike.%${input.search}%`
+      `display_name.ilike.%${input.search}%,external_id.ilike.%${input.search}%`,
     );
   }
 
-  for (const order of input.order_by ?? [{ column: "created_at", direction: "desc" }]) {
-    builder = builder.order(order.column, { ascending: order.direction !== "desc" });
+  for (const order of input.order_by ?? [
+    { column: "created_at", direction: "desc" },
+  ]) {
+    builder = builder.order(order.column, {
+      ascending: order.direction !== "desc",
+    });
   }
 
-  builder = builder.limit(input.limit ?? 50).offset(input.offset ?? 0);
+  // PostgrestFilterBuilder has no .offset(); range(from, to) is inclusive.
+  const limit = input.limit ?? 50;
+  const offset = input.offset ?? 0;
+  builder = builder.range(offset, offset + limit - 1);
 
   const { data, error } = await builder;
   if (error) throw new Error(error.message);
@@ -144,8 +157,8 @@ export async function queryObjectSet(input: ObjectSetQuery): Promise<{
         ...obj,
         attributes: Object.fromEntries(
           Object.entries(obj.attributes).filter(([key]) =>
-            interfaceWhitelist?.includes(key)
-          )
+            interfaceWhitelist?.includes(key),
+          ),
         ),
       })),
       count: count ?? 0,

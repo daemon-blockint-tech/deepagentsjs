@@ -142,6 +142,7 @@
         "libs/acp/src/cli.ts",
         "libs/acp/src/logger.ts",
         "libs/deepagents/src/middleware/skills.ts",
+        "src/eval.ts",
       ],
       "rules": {
         "no-console": "off",

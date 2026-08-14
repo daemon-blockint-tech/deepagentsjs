@@ -1,6 +1,7 @@
 import { getSupabaseClient } from "./supabase.js";
 import { getCurrentUserId } from "./auth.js";
 import { proposeActionTool } from "./tools.js";
+import { getErrorMessage } from "./utils.js";
 
 export interface AutomationContext {
   workspace_id: string;
@@ -152,9 +153,7 @@ export function startAutomationScheduler(intervalMs = 60000) {
       await processScheduledAutomations();
     } catch (err) {
       // Log and continue; do not crash the scheduler.
-      process.stderr.write(
-        `Scheduler error: ${err instanceof Error ? err.message : String(err)}\n`,
-      );
+      process.stderr.write(`Scheduler error: ${getErrorMessage(err)}\n`);
     }
   }, intervalMs);
 }

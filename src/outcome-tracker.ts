@@ -9,16 +9,17 @@
  * This is the "Clone jadi semakin ahli" part of the loop — the agent
  * learns from outcomes, not just from immediate user feedback.
  */
-import { getSupabaseClient } from "./supabase.js"
+import { getSupabaseClient } from "./supabase.js";
+import { getErrorMessage } from "./utils.js";
 
-const DEFAULT_OUTCOME_DELAY_MS = 24 * 60 * 60 * 1000 // 24 hours
-const MAX_OUTCOME_DELAY_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
+const DEFAULT_OUTCOME_DELAY_MS = 24 * 60 * 60 * 1000; // 24 hours
+const MAX_OUTCOME_DELAY_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 interface OutcomeCheck {
-  action_id: string
-  workspace_id: string
-  type: string
-  payload: Record<string, unknown>
+  action_id: string;
+  workspace_id: string;
+  type: string;
+  payload: Record<string, unknown>;
 }
 
 /**
@@ -33,17 +34,24 @@ export function scheduleOutcomeCheck(
   workspaceId: string,
   type: string,
   payload: Record<string, unknown>,
-  delayMs: number = DEFAULT_OUTCOME_DELAY_MS
+  delayMs: number = DEFAULT_OUTCOME_DELAY_MS,
 ): void {
-  const safeDelay = Math.min(Math.max(delayMs, 0), MAX_OUTCOME_DELAY_MS)
+  const safeDelay = Math.min(Math.max(delayMs, 0), MAX_OUTCOME_DELAY_MS);
 
   setTimeout(async () => {
     try {
-      await runOutcomeCheck({ action_id: actionId, workspace_id: workspaceId, type, payload })
+      await runOutcomeCheck({
+        action_id: actionId,
+        workspace_id: workspaceId,
+        type,
+        payload,
+      });
     } catch (err) {
-      console.error(`Outcome check failed for action ${actionId}:`, err)
+      process.stderr.write(
+        `Outcome check failed for action ${actionId}: ${getErrorMessage(err)}\n`,
+      );
     }
-  }, safeDelay)
+  }, safeDelay);
 }
 
 /**
@@ -57,7 +65,7 @@ export function scheduleOutcomeCheck(
  * existing outcome snapshot from execution time.
  */
 async function runOutcomeCheck(check: OutcomeCheck): Promise<void> {
-  const supabase = getSupabaseClient()
+  const supabase = getSupabaseClient();
 
   // Fetch the current decision row
   const { data: decision, error: fetchError } = await supabase
@@ -65,27 +73,27 @@ async function runOutcomeCheck(check: OutcomeCheck): Promise<void> {
     .select("id, outcome")
     .eq("action_id", check.action_id)
     .eq("workspace_id", check.workspace_id)
-    .single()
+    .single();
 
   if (fetchError || !decision) {
     // Decision row doesn't exist yet — nothing to update
-    return
+    return;
   }
 
-  const existingOutcome = (decision.outcome as Record<string, unknown>) ?? {}
-  const measured = await measureOutcome(supabase, check)
+  const existingOutcome = (decision.outcome as Record<string, unknown>) ?? {};
+  const measured = await measureOutcome(supabase, check);
 
   const updatedOutcome = {
     ...existingOutcome,
     measured_at: new Date().toISOString(),
     measurement: measured,
-  }
+  };
 
   await supabase
     .from("decisions")
     .update({ outcome: updatedOutcome })
     .eq("id", decision.id)
-    .eq("workspace_id", check.workspace_id)
+    .eq("workspace_id", check.workspace_id);
 }
 
 /**
@@ -96,54 +104,54 @@ async function runOutcomeCheck(check: OutcomeCheck): Promise<void> {
  */
 async function measureOutcome(
   supabase: ReturnType<typeof getSupabaseClient>,
-  check: OutcomeCheck
+  check: OutcomeCheck,
 ): Promise<{ status: string; details?: Record<string, unknown> }> {
   if (check.type === "update_object") {
-    const objectId = check.payload.object_id as string
+    const objectId = check.payload.object_id as string;
     const updates = (check.payload.updates ?? check.payload) as Record<
       string,
       unknown
-    >
+    >;
 
     const { data: obj, error } = await supabase
       .from("ontology_objects")
       .select("attributes")
       .eq("id", objectId)
-      .single()
+      .single();
 
     if (error || !obj) {
-      return { status: "object_missing" }
+      return { status: "object_missing" };
     }
 
     // Check if the updated fields still hold the values that were set
-    const attrs = obj.attributes as Record<string, unknown>
+    const attrs = obj.attributes as Record<string, unknown>;
     const stillPresent = Object.entries(updates).every(
-      ([key, value]) => attrs[key] === value
-    )
+      ([key, value]) => attrs[key] === value,
+    );
 
     return {
       status: stillPresent ? "persisted" : "reverted",
       details: { checked_fields: Object.keys(updates) },
-    }
+    };
   }
 
   if (check.type === "create_object") {
-    const externalId = check.payload.external_id as string
+    const externalId = check.payload.external_id as string;
     const { data, error } = await supabase
       .from("ontology_objects")
       .select("id")
       .eq("workspace_id", check.workspace_id)
       .eq("external_id", externalId)
-      .single()
+      .single();
 
     if (error || !data) {
-      return { status: "object_deleted" }
+      return { status: "object_deleted" };
     }
-    return { status: "object_exists" }
+    return { status: "object_exists" };
   }
 
   // webhook or unknown — can't measure automatically
-  return { status: "not_measurable" }
+  return { status: "not_measurable" };
 }
 
 /**
@@ -157,20 +165,20 @@ export async function attachFeedbackToDecision(
   actionId: string,
   workspaceId: string,
   feedbackScore: number,
-  comment?: string
+  comment?: string,
 ): Promise<void> {
-  const supabase = getSupabaseClient()
+  const supabase = getSupabaseClient();
 
   const { data: decision, error } = await supabase
     .from("decisions")
     .select("id, outcome")
     .eq("action_id", actionId)
     .eq("workspace_id", workspaceId)
-    .single()
+    .single();
 
-  if (error || !decision) return
+  if (error || !decision) return;
 
-  const existingOutcome = (decision.outcome as Record<string, unknown>) ?? {}
+  const existingOutcome = (decision.outcome as Record<string, unknown>) ?? {};
   const updatedOutcome = {
     ...existingOutcome,
     user_feedback: {
@@ -178,7 +186,7 @@ export async function attachFeedbackToDecision(
       comment: comment ?? null,
       at: new Date().toISOString(),
     },
-  }
+  };
 
   await supabase
     .from("decisions")
@@ -187,5 +195,5 @@ export async function attachFeedbackToDecision(
       feedback_score: feedbackScore,
     })
     .eq("id", decision.id)
-    .eq("workspace_id", workspaceId)
+    .eq("workspace_id", workspaceId);
 }

@@ -8,14 +8,15 @@
  * approvals) to Supabase Postgres, so pending approvals survive
  * server restarts.
  */
-import process from "node:process"
-import { MemorySaver } from "@langchain/langgraph"
-import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres"
+import process from "node:process";
+import { MemorySaver } from "@langchain/langgraph";
+import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
+import { getErrorMessage } from "./utils.js";
 
-export type Checkpointer = MemorySaver | PostgresSaver
+export type Checkpointer = MemorySaver | PostgresSaver;
 
-let checkpointerInstance: Checkpointer | null = null
-let setupPromise: Promise<Checkpointer> | null = null
+let checkpointerInstance: Checkpointer | null = null;
+let setupPromise: Promise<Checkpointer> | null = null;
 
 /**
  * Build the Supabase Postgres connection string from env vars.
@@ -28,20 +29,20 @@ let setupPromise: Promise<Checkpointer> | null = null
  */
 function getConnectionString(): string | null {
   // Direct override
-  if (process.env.DATABASE_URL) return process.env.DATABASE_URL
+  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
 
   // Construct from Supabase URL + password
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const dbPassword = process.env.SUPABASE_DB_PASSWORD
-  if (!supabaseUrl || !dbPassword) return null
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const dbPassword = process.env.SUPABASE_DB_PASSWORD;
+  if (!supabaseUrl || !dbPassword) return null;
 
   // Extract project ref from URL: https://[ref].supabase.co
-  const match = supabaseUrl.match(/https:\/\/([a-z0-9]+)\.supabase\.co/i)
-  if (!match) return null
-  const projectRef = match[1]
+  const match = supabaseUrl.match(/https:\/\/([a-z0-9]+)\.supabase\.co/i);
+  if (!match) return null;
+  const projectRef = match[1];
 
   // Use the direct connection (not pooler) for LISTEN/NOTIFY support
-  return `postgresql://postgres:${encodeURIComponent(dbPassword)}@db.${projectRef}.supabase.co:5432/postgres`
+  return `postgresql://postgres:${encodeURIComponent(dbPassword)}@db.${projectRef}.supabase.co:5432/postgres`;
 }
 
 /**
@@ -54,44 +55,43 @@ function getConnectionString(): string | null {
  * Memoized — the same checkpointer is reused across all agents.
  */
 export async function getCheckpointer(): Promise<Checkpointer> {
-  if (checkpointerInstance) return checkpointerInstance
-  if (setupPromise) return setupPromise
+  if (checkpointerInstance) return checkpointerInstance;
+  if (setupPromise) return setupPromise;
 
   setupPromise = (async () => {
-    const connString = getConnectionString()
+    const connString = getConnectionString();
 
     if (!connString) {
-      console.warn(
+      process.stderr.write(
         "[checkpointer] No DATABASE_URL or Supabase credentials found — " +
-          "falling back to MemorySaver (pending approvals will be lost on restart)"
-      )
-      checkpointerInstance = new MemorySaver()
-      return checkpointerInstance
+          "falling back to MemorySaver (pending approvals will be lost on restart)\n",
+      );
+      checkpointerInstance = new MemorySaver();
+      return checkpointerInstance;
     }
 
     try {
       // PostgresSaver manages its own connection pool internally
-      const saver = PostgresSaver.fromConnString(connString)
+      const saver = PostgresSaver.fromConnString(connString);
       // Run setup to create checkpoint tables if they don't exist
-      await saver.setup()
+      await saver.setup();
 
-      console.info(
+      process.stderr.write(
         "[checkpointer] PostgresSaver initialized — " +
-          "agent state + pending approvals will persist across restarts"
-      )
+          "agent state + pending approvals will persist across restarts\n",
+      );
 
-      checkpointerInstance = saver
-      return checkpointerInstance
+      checkpointerInstance = saver;
+      return checkpointerInstance;
     } catch (err) {
-      console.error(
+      process.stderr.write(
         "[checkpointer] Failed to initialize PostgresSaver — " +
-          "falling back to MemorySaver:",
-        err instanceof Error ? err.message : String(err)
-      )
-      checkpointerInstance = new MemorySaver()
-      return checkpointerInstance
+          `falling back to MemorySaver: ${getErrorMessage(err)}\n`,
+      );
+      checkpointerInstance = new MemorySaver();
+      return checkpointerInstance;
     }
-  })()
+  })();
 
-  return setupPromise
+  return setupPromise;
 }

@@ -27,12 +27,12 @@ export interface ThreadFileEntry {
 }
 
 function isBinary(file: StoredFile): boolean {
-  return file.content instanceof Uint8Array;
+  return ArrayBuffer.isView(file.content);
 }
 
 /** Normalize either storage format to text. Returns null for binary. */
 function toText(file: StoredFile): string | null {
-  if (file.content instanceof Uint8Array) return null;
+  if (ArrayBuffer.isView(file.content)) return null;
   return Array.isArray(file.content) ? file.content.join("\n") : file.content;
 }
 

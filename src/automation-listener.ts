@@ -1,6 +1,7 @@
 import process from "node:process";
 import pg from "pg";
 import { evaluateAutomations, type AutomationContext } from "./automations.js";
+import { getErrorMessage } from "./utils.js";
 
 const OBJECT_CHANNEL = "ontology_object_changed";
 const ACTION_CHANNEL = "action_status_changed";
@@ -50,7 +51,7 @@ async function handleObjectNotification(
     await evaluateAutomations(ctx);
   } catch (err) {
     process.stderr.write(
-      `Automation listener evaluate error: ${err instanceof Error ? err.message : String(err)}\n`,
+      `Automation listener evaluate error: ${getErrorMessage(err)}\n`,
     );
   }
 }
@@ -93,7 +94,7 @@ async function handleActionNotification(
     await evaluateAutomations(ctx);
   } catch (err) {
     process.stderr.write(
-      `Automation listener evaluate error: ${err instanceof Error ? err.message : String(err)}\n`,
+      `Automation listener evaluate error: ${getErrorMessage(err)}\n`,
     );
   }
 }
@@ -123,7 +124,7 @@ async function connect(): Promise<void> {
       }
     } catch (err) {
       process.stderr.write(
-        `Automation listener payload parse error: ${err instanceof Error ? err.message : String(err)}\n`,
+        `Automation listener payload parse error: ${getErrorMessage(err)}\n`,
       );
     }
   });
@@ -153,7 +154,7 @@ async function connect(): Promise<void> {
     );
   } catch (err) {
     process.stderr.write(
-      `Automation listener connect error: ${err instanceof Error ? err.message : String(err)}\n`,
+      `Automation listener connect error: ${getErrorMessage(err)}\n`,
     );
     scheduleReconnect();
   }

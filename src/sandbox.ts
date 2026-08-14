@@ -21,14 +21,7 @@ const ALLOWED_COMMANDS = new Set([
   "which",
 ]);
 
-const BLOCKED_PATTERNS = [
-  /[;&|`$]/,
-  />></,
-  />[^>]/,
-  /<[^<]/,
-  /\$\(/,
-  /\`/,
-];
+const BLOCKED_PATTERNS = [/[;&|`$]/, />></, />[^>]/, /<[^<]/, /\$\(/, /`/];
 
 function isCommandAllowed(command: string): boolean {
   const base = command.trim().split(/\s+/)[0];
@@ -52,10 +45,12 @@ export interface ExecuteResult {
  * Run a shell command in a restricted local sandbox.
  * Disabled unless SANDBOX_ENABLED=true.
  */
-export async function executeCommand(input: ExecuteInput): Promise<ExecuteResult> {
+export async function executeCommand(
+  input: ExecuteInput,
+): Promise<ExecuteResult> {
   if (!SANDBOX_ENABLED) {
     throw new Error(
-      "Sandbox is disabled. Set SANDBOX_ENABLED=true to enable restricted command execution."
+      "Sandbox is disabled. Set SANDBOX_ENABLED=true to enable restricted command execution.",
     );
   }
 
@@ -74,7 +69,11 @@ export async function executeCommand(input: ExecuteInput): Promise<ExecuteResult
     });
     return { stdout, stderr, exitCode: 0 };
   } catch (error) {
-    const execError = error as { stdout?: string; stderr?: string; code?: number };
+    const execError = error as {
+      stdout?: string;
+      stderr?: string;
+      code?: number;
+    };
     return {
       stdout: execError.stdout || "",
       stderr: execError.stderr || "",
@@ -96,5 +95,5 @@ export const executeTool = tool(
       command: z.string().describe("The command to run"),
       timeout_ms: z.number().optional().describe("Timeout in milliseconds"),
     }),
-  }
+  },
 );

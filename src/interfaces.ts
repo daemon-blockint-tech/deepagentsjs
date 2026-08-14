@@ -1,6 +1,6 @@
 import { getSupabaseClient } from "./supabase.js";
 import { verifyWorkspaceMembership } from "./auth.js";
-import { queryOntologyTool, proposeActionTool } from "./tools.js";
+import { proposeActionTool } from "./tools.js";
 
 export interface OntologyInterface {
   id: string;
@@ -16,12 +16,12 @@ export interface OntologyInterface {
 async function loadInterface(
   supabase: ReturnType<typeof getSupabaseClient>,
   workspaceId: string,
-  slug: string
+  slug: string,
 ): Promise<OntologyInterface> {
   const { data, error } = await supabase
     .from("ontology_interfaces")
     .select(
-      "id, workspace_id, name, slug, object_type, property_whitelist, required_properties, markings"
+      "id, workspace_id, name, slug, object_type, property_whitelist, required_properties, markings",
     )
     .eq("workspace_id", workspaceId)
     .eq("slug", slug)
@@ -47,7 +47,7 @@ export async function queryInterfaceObjects(
   workspaceId: string,
   interfaceSlug: string,
   query: string,
-  limit = 10
+  limit = 10,
 ): Promise<unknown[]> {
   const supabase = getSupabaseClient();
   await verifyWorkspaceMembership(supabase, workspaceId);
@@ -79,7 +79,9 @@ export async function queryInterfaceObjects(
   }
 
   if (query) {
-    builder = builder.or(`display_name.ilike.%${query}%,external_id.ilike.%${query}%`);
+    builder = builder.or(
+      `display_name.ilike.%${query}%,external_id.ilike.%${query}%`,
+    );
   }
 
   const { data, error } = await builder;
@@ -100,8 +102,8 @@ export async function queryInterfaceObjects(
     ...obj,
     attributes: Object.fromEntries(
       Object.entries(obj.attributes).filter(([key]) =>
-        iface.property_whitelist.includes(key)
-      )
+        iface.property_whitelist.includes(key),
+      ),
     ),
   }));
 }
@@ -114,7 +116,7 @@ export async function executeInterfaceAction(
   workspaceId: string,
   interfaceSlug: string,
   actionType: string,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
 ): Promise<{ action_id: string; status: string }> {
   const supabase = getSupabaseClient();
   await verifyWorkspaceMembership(supabase, workspaceId);
@@ -123,7 +125,7 @@ export async function executeInterfaceAction(
 
   // Validate payload contains required properties
   const missing = iface.required_properties.filter(
-    (key) => payload[key] === undefined
+    (key) => payload[key] === undefined,
   );
   if (missing.length > 0) {
     throw new Error(`Missing required properties: ${missing.join(", ")}`);
@@ -138,7 +140,7 @@ export async function executeInterfaceAction(
   ]);
 
   const sanitized: Record<string, unknown> = Object.fromEntries(
-    Object.entries(payload).filter(([key]) => allowed.has(key))
+    Object.entries(payload).filter(([key]) => allowed.has(key)),
   );
 
   const result = await proposeActionTool.invoke({
