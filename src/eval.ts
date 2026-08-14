@@ -27,7 +27,9 @@ const data: Example[] = [
     created_at: new Date().toISOString(),
     dataset_id: "",
     runs: [],
-    inputs: { messages: [{ role: "user", content: "What is 2+2?" }] } as EvalInput,
+    inputs: {
+      messages: [{ role: "user", content: "What is 2+2?" }],
+    } as EvalInput,
     outputs: { response: "4" } as EvalOutput,
   },
   {
@@ -35,7 +37,9 @@ const data: Example[] = [
     created_at: new Date().toISOString(),
     dataset_id: "",
     runs: [],
-    inputs: { messages: [{ role: "user", content: "Translate 'hello' to French." }] } as EvalInput,
+    inputs: {
+      messages: [{ role: "user", content: "Translate 'hello' to French." }],
+    } as EvalInput,
     outputs: { response: "bonjour" } as EvalOutput,
   },
   {
@@ -43,7 +47,9 @@ const data: Example[] = [
     created_at: new Date().toISOString(),
     dataset_id: "",
     runs: [],
-    inputs: { messages: [{ role: "user", content: "What is the capital of Japan?" }] } as EvalInput,
+    inputs: {
+      messages: [{ role: "user", content: "What is the capital of Japan?" }],
+    } as EvalInput,
     outputs: { response: "Tokyo" } as EvalOutput,
   },
 ];
@@ -54,7 +60,9 @@ async function target(inputs: EvalInput): Promise<EvalOutput> {
   const messages = result?.messages;
   const last = Array.isArray(messages) ? messages[messages.length - 1] : null;
   const content = last?.content ?? "";
-  return { response: typeof content === "string" ? content : JSON.stringify(content) };
+  return {
+    response: typeof content === "string" ? content : JSON.stringify(content),
+  };
 }
 
 async function containsReference(args: {

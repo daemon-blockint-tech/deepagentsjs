@@ -14,7 +14,7 @@
  * its tier-based default.
  */
 
-export type ModelTier = "fast" | "balanced" | "powerful"
+export type ModelTier = "fast" | "balanced" | "powerful";
 
 /**
  * OpenRouter model names for each tier.
@@ -23,7 +23,7 @@ export const MODEL_TIERS: Record<ModelTier, string> = {
   fast: "openai/gpt-4o-mini",
   balanced: "openai/gpt-4o",
   powerful: "anthropic/claude-3.5-sonnet",
-}
+};
 
 /**
  * Default tier for each specialist (and the orchestrator).
@@ -35,7 +35,7 @@ export const SPECIALIST_MODEL_TIER: Record<string, ModelTier> = {
   writing: "balanced",
   pricing: "powerful",
   action: "balanced",
-}
+};
 
 /**
  * Select a model for a given specialist.
@@ -48,15 +48,12 @@ export const SPECIALIST_MODEL_TIER: Record<string, ModelTier> = {
  * @param userModel   Optional user-provided model override
  * @returns           The OpenRouter model name to use
  */
-export function selectModel(
-  specialist: string,
-  userModel?: string
-): string {
+export function selectModel(specialist: string, userModel?: string): string {
   if (userModel && userModel.trim() !== "") {
-    return userModel
+    return userModel;
   }
-  const tier = SPECIALIST_MODEL_TIER[specialist] ?? "balanced"
-  return MODEL_TIERS[tier]
+  const tier = SPECIALIST_MODEL_TIER[specialist] ?? "balanced";
+  return MODEL_TIERS[tier];
 }
 
 /**
@@ -71,21 +68,21 @@ export function selectModel(
  */
 export function selectModelForTask(
   taskType: string,
-  complexity: "low" | "medium" | "high"
+  complexity: "low" | "medium" | "high",
 ): string {
-  const baseTier = SPECIALIST_MODEL_TIER[taskType] ?? "balanced"
+  const baseTier = SPECIALIST_MODEL_TIER[taskType] ?? "balanced";
 
   // Adjust tier based on complexity.
   // - low complexity never needs more than "fast"
   // - high complexity bumps up a level (fast→balanced, balanced→powerful)
-  let tier: ModelTier = baseTier
+  let tier: ModelTier = baseTier;
   if (complexity === "low") {
-    tier = "fast"
+    tier = "fast";
   } else if (complexity === "high") {
-    if (baseTier === "fast") tier = "balanced"
-    else if (baseTier === "balanced") tier = "powerful"
-    else tier = "powerful"
+    if (baseTier === "fast") tier = "balanced";
+    else if (baseTier === "balanced") tier = "powerful";
+    else tier = "powerful";
   }
 
-  return MODEL_TIERS[tier]
+  return MODEL_TIERS[tier];
 }

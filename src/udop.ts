@@ -24,7 +24,7 @@ const API_KEY = process.env.UDOP_API_KEY;
  * text files and JSON content for JSON files. Other types return a note.
  */
 export async function parseDocument(
-  doc: DocumentPayload
+  doc: DocumentPayload,
 ): Promise<ParsedDocument> {
   if (ENDPOINT) {
     const res = await fetch(ENDPOINT, {
@@ -45,7 +45,10 @@ export async function parseDocument(
       throw new Error(`UDOP parse failed: ${res.status} ${text}`);
     }
 
-    const json = (await res.json()) as { text?: string; metadata?: Record<string, unknown> };
+    const json = (await res.json()) as {
+      text?: string;
+      metadata?: Record<string, unknown>;
+    };
     return {
       name: doc.name,
       type: doc.type,
@@ -95,7 +98,7 @@ export async function parseDocument(
 }
 
 export async function parseDocuments(
-  docs: DocumentPayload[]
+  docs: DocumentPayload[],
 ): Promise<ParsedDocument[]> {
   if (docs.length === 0) return [];
   return Promise.all(docs.map((doc) => parseDocument(doc)));

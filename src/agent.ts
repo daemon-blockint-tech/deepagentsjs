@@ -22,10 +22,10 @@ export {
   checkpointer,
   store,
   backend,
-} from "./supervisor.js"
+} from "./supervisor.js";
 
 export type {
   PendingApproval,
   AgentEvaluationInput,
   OrchestrationInput,
-} from "./supervisor.js"
+} from "./supervisor.js";

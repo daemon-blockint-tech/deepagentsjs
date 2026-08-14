@@ -1,14 +1,14 @@
-import { z } from "zod"
-import { tool } from "@langchain/core/tools"
-import { semanticQueryOntology } from "./semantic.js"
-import { withRetry, isTransientError } from "./fault-tolerance.js"
+import { z } from "zod";
+import { tool } from "@langchain/core/tools";
+import { semanticQueryOntology } from "./semantic.js";
+import { withRetry, isTransientError } from "./fault-tolerance.js";
 
 const DEFAULT_RETRY = {
   maxRetries: 2,
   initialDelayMs: 500,
   backoffFactor: 2,
   retryOn: isTransientError,
-}
+};
 
 /**
  * Semantic search over ontology chunks using pgvector.
@@ -25,8 +25,8 @@ export const semanticSearchTool = tool(
       query,
       limit,
       threshold,
-    })
-    return JSON.stringify(results)
+    });
+    return JSON.stringify(results);
   }, DEFAULT_RETRY),
   {
     name: "semantic_search",
@@ -36,7 +36,9 @@ export const semanticSearchTool = tool(
       "Use this when query_ontology's substring search isn't finding what you need.",
     schema: z.object({
       workspace_id: z.string().uuid(),
-      query: z.string().describe("Natural language query to embed and search with"),
+      query: z
+        .string()
+        .describe("Natural language query to embed and search with"),
       limit: z
         .number()
         .min(1)
@@ -50,5 +52,5 @@ export const semanticSearchTool = tool(
         .optional()
         .describe("Cosine similarity threshold (default 0.5)"),
     }),
-  }
-)
+  },
+);

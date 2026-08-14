@@ -14,4 +14,9 @@
  * (including paused HITL approvals) persists across the conversation.
  * The frontend sees a single unified agent via the standard API.
  */
-export { graph, getCloneAgent, DEFAULT_MODEL, AGENT_VERSION } from "./supervisor.js"
+export {
+  graph,
+  getCloneAgent,
+  DEFAULT_MODEL,
+  AGENT_VERSION,
+} from "./supervisor.js";

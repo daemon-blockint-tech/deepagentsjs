@@ -22,17 +22,17 @@
  * Specialists share the same checkpointer/store, so they can read
  * temp objects that other specialists wrote to the Ontology.
  */
-import { z } from "zod"
-import { tool } from "@langchain/core/tools"
-import type { Agent } from "./supervisor-types.js"
+import { z } from "zod";
+import { tool } from "@langchain/core/tools";
+import type { Agent } from "./supervisor-types.js";
 
 interface AgentRegistry {
-  orchestrator: Agent
-  research: Agent
-  analysis: Agent
-  writing: Agent
-  pricing: Agent
-  action: Agent
+  orchestrator: Agent;
+  research: Agent;
+  analysis: Agent;
+  writing: Agent;
+  pricing: Agent;
+  action: Agent;
 }
 
 /**
@@ -40,38 +40,37 @@ interface AgentRegistry {
  * This avoids circular imports — supervisor.ts builds the registry,
  * then passes it to createDelegationTools().
  */
-let registryRef: AgentRegistry | null = null
+let registryRef: AgentRegistry | null = null;
 
 export function setAgentRegistry(registry: AgentRegistry): void {
-  registryRef = registry
+  registryRef = registry;
 }
 
 function getRegistry(): AgentRegistry {
   if (!registryRef) {
-    throw new Error("Agent registry not initialized — call setAgentRegistry first")
+    throw new Error(
+      "Agent registry not initialized — call setAgentRegistry first",
+    );
   }
-  return registryRef
+  return registryRef;
 }
 
 /**
  * Invoke a specialist agent with a single-turn sub-task.
  * Returns the agent's text response.
  */
-async function invokeSpecialist(
-  agent: Agent,
-  task: string
-): Promise<string> {
+async function invokeSpecialist(agent: Agent, task: string): Promise<string> {
   const result = await agent.invoke({
     messages: [{ role: "user", content: task }],
-  })
+  });
 
-  const last = (result.messages as Array<{ content?: unknown }>).at(-1)
+  const last = (result.messages as Array<{ content?: unknown }>).at(-1);
   const content =
     typeof last?.content === "string"
       ? last.content
-      : JSON.stringify(last?.content ?? null)
+      : JSON.stringify(last?.content ?? null);
 
-  return content
+  return content;
 }
 
 // ---------------------------------------------------------------------------
@@ -80,9 +79,9 @@ async function invokeSpecialist(
 
 export const delegateResearchTool = tool(
   async ({ task }) => {
-    const registry = getRegistry()
-    const result = await invokeSpecialist(registry.research, task)
-    return `Research Specialist output:\n${result}`
+    const registry = getRegistry();
+    const result = await invokeSpecialist(registry.research, task);
+    return `Research Specialist output:\n${result}`;
   },
   {
     name: "delegate_research",
@@ -92,16 +91,18 @@ export const delegateResearchTool = tool(
       "Use for: finding data, looking up objects, gathering context. " +
       "The task should be specific: 'Find all competitor objects in workspace X with pricing data'.",
     schema: z.object({
-      task: z.string().describe("Specific research task for the Research Specialist"),
+      task: z
+        .string()
+        .describe("Specific research task for the Research Specialist"),
     }),
-  }
-)
+  },
+);
 
 export const delegateAnalysisTool = tool(
   async ({ task }) => {
-    const registry = getRegistry()
-    const result = await invokeSpecialist(registry.analysis, task)
-    return `Analysis Specialist output:\n${result}`
+    const registry = getRegistry();
+    const result = await invokeSpecialist(registry.analysis, task);
+    return `Analysis Specialist output:\n${result}`;
   },
   {
     name: "delegate_analysis",
@@ -111,16 +112,18 @@ export const delegateAnalysisTool = tool(
       "Use for: calculations, data analysis, code evaluation, simulations. " +
       "The task should be specific: 'Calculate the price elasticity for product X'.",
     schema: z.object({
-      task: z.string().describe("Specific analysis task for the Analysis Specialist"),
+      task: z
+        .string()
+        .describe("Specific analysis task for the Analysis Specialist"),
     }),
-  }
-)
+  },
+);
 
 export const delegateWritingTool = tool(
   async ({ task }) => {
-    const registry = getRegistry()
-    const result = await invokeSpecialist(registry.writing, task)
-    return `Writing Specialist output:\n${result}`
+    const registry = getRegistry();
+    const result = await invokeSpecialist(registry.writing, task);
+    return `Writing Specialist output:\n${result}`;
   },
   {
     name: "delegate_writing",
@@ -130,16 +133,18 @@ export const delegateWritingTool = tool(
       "Use for: drafting reports, creating documents, writing summaries. " +
       "The task should be specific: 'Draft a Q3 competitor report covering CompetitorX and CompetitorY'.",
     schema: z.object({
-      task: z.string().describe("Specific writing task for the Writing Specialist"),
+      task: z
+        .string()
+        .describe("Specific writing task for the Writing Specialist"),
     }),
-  }
-)
+  },
+);
 
 export const delegatePricingTool = tool(
   async ({ task }) => {
-    const registry = getRegistry()
-    const result = await invokeSpecialist(registry.pricing, task)
-    return `Pricing Strategy Specialist output:\n${result}`
+    const registry = getRegistry();
+    const result = await invokeSpecialist(registry.pricing, task);
+    return `Pricing Strategy Specialist output:\n${result}`;
   },
   {
     name: "delegate_pricing",
@@ -149,16 +154,18 @@ export const delegatePricingTool = tool(
       "Use for: pricing analysis, price recommendations, margin calculations, competitive positioning. " +
       "The task should be specific: 'Recommend price changes for product X based on competitor Y pricing'.",
     schema: z.object({
-      task: z.string().describe("Specific pricing task for the Pricing Strategy Specialist"),
+      task: z
+        .string()
+        .describe("Specific pricing task for the Pricing Strategy Specialist"),
     }),
-  }
-)
+  },
+);
 
 export const delegateActionTool = tool(
   async ({ task }) => {
-    const registry = getRegistry()
-    const result = await invokeSpecialist(registry.action, task)
-    return `Action Specialist output:\n${result}`
+    const registry = getRegistry();
+    const result = await invokeSpecialist(registry.action, task);
+    return `Action Specialist output:\n${result}`;
   },
   {
     name: "delegate_action",
@@ -169,10 +176,12 @@ export const delegateActionTool = tool(
       "The task should include the workspace_id and specific change details. " +
       "Example: 'Propose updating CompetitorX pricing in workspace X to match the pricing model recommendations'.",
     schema: z.object({
-      task: z.string().describe("Specific action task for the Action Specialist"),
+      task: z
+        .string()
+        .describe("Specific action task for the Action Specialist"),
     }),
-  }
-)
+  },
+);
 
 /**
  * All delegation tools, exported as an array for easy inclusion in the orchestrator.
@@ -183,4 +192,4 @@ export const delegationTools = [
   delegateWritingTool,
   delegatePricingTool,
   delegateActionTool,
-]
+];

@@ -1,19 +1,19 @@
-import process from "node:process"
+import process from "node:process";
 
-import { z } from "zod"
-import { tool } from "@langchain/core/tools"
-import { getSupabaseClient } from "./supabase.js"
-import { verifyWorkspaceMembership } from "./auth.js"
-import { withRetry, isTransientError } from "./fault-tolerance.js"
-import { upsertObjectChunk } from "./object-chunks.js"
-import { getErrorMessage } from "./utils.js"
+import { z } from "zod";
+import { tool } from "@langchain/core/tools";
+import { getSupabaseClient } from "./supabase.js";
+import { verifyWorkspaceMembership } from "./auth.js";
+import { withRetry, isTransientError } from "./fault-tolerance.js";
+import { upsertObjectChunk } from "./object-chunks.js";
+import { getErrorMessage } from "./utils.js";
 
 const DEFAULT_RETRY = {
   maxRetries: 2,
   initialDelayMs: 500,
   backoffFactor: 2,
   retryOn: isTransientError,
-}
+};
 
 /**
  * Create a temporary/draft ontology object.
@@ -29,8 +29,8 @@ const DEFAULT_RETRY = {
  */
 export const createTempObjectTool = tool(
   withRetry(async ({ workspace_id, object_type, display_name, attributes }) => {
-    const supabase = getSupabaseClient()
-    await verifyWorkspaceMembership(supabase, workspace_id)
+    const supabase = getSupabaseClient();
+    await verifyWorkspaceMembership(supabase, workspace_id);
 
     // Mark as temporary + agent-created
     const markedAttributes = {
@@ -38,7 +38,7 @@ export const createTempObjectTool = tool(
       _temp: true,
       _created_by_agent: true,
       _created_at: new Date().toISOString(),
-    }
+    };
 
     const { data, error } = await supabase
       .from("ontology_objects")
@@ -50,14 +50,14 @@ export const createTempObjectTool = tool(
         attributes: markedAttributes,
       })
       .select("id, display_name, attributes")
-      .single()
+      .single();
 
-    if (error) throw new Error(error.message)
+    if (error) throw new Error(error.message);
 
     // Also insert normalized properties for searchability
     if (attributes) {
       for (const [key, value] of Object.entries(attributes)) {
-        if (key.startsWith("_")) continue
+        if (key.startsWith("_")) continue;
         await supabase.from("ontology_properties").upsert(
           {
             workspace_id,
@@ -66,8 +66,8 @@ export const createTempObjectTool = tool(
             value: value as unknown,
             value_type: typeof value === "number" ? "number" : "string",
           },
-          { onConflict: "workspace_id, object_id, key" }
-        )
+          { onConflict: "workspace_id, object_id, key" },
+        );
       }
     }
 
@@ -79,12 +79,12 @@ export const createTempObjectTool = tool(
         workspace_id,
         data.id,
         display_name,
-        markedAttributes
-      )
+        markedAttributes,
+      );
     } catch (err) {
       process.stderr.write(
-        `create_temp_object: embedding failed for ${data.id}: ${getErrorMessage(err)}\n`
-      )
+        `create_temp_object: embedding failed for ${data.id}: ${getErrorMessage(err)}\n`,
+      );
     }
 
     return JSON.stringify({
@@ -92,7 +92,7 @@ export const createTempObjectTool = tool(
       display_name: data.display_name,
       status: "temp_created",
       message: `Temporary object '${display_name}' created in Ontology. Other specialists can read it via query_ontology.`,
-    })
+    });
   }, DEFAULT_RETRY),
   {
     name: "create_temp_object",
@@ -106,11 +106,13 @@ export const createTempObjectTool = tool(
       workspace_id: z.string().uuid(),
       object_type: z
         .string()
-        .describe("Object type, e.g. 'report', 'analysis', 'pricing_model', 'draft'"),
+        .describe(
+          "Object type, e.g. 'report', 'analysis', 'pricing_model', 'draft'",
+        ),
       display_name: z.string().describe("Human-readable name for the object"),
       attributes: z
         .record(z.unknown())
         .describe("Object attributes/fields as key-value pairs"),
     }),
-  }
-)
+  },
+);

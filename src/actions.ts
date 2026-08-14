@@ -24,7 +24,7 @@ function actionLog(
   supabase: ReturnType<typeof getSupabaseClient>,
   actionId: string,
   workspaceId: string,
-  event: "proposed" | "approved" | "rejected" | "executed"
+  event: "proposed" | "approved" | "rejected" | "executed",
 ) {
   return supabase.from("action_logs").insert({
     action_id: actionId,
@@ -44,13 +44,13 @@ async function refreshChunk(
   workspaceId: string,
   objectId: string,
   displayName: string,
-  attributes: Record<string, unknown>
+  attributes: Record<string, unknown>,
 ) {
   try {
     await upsertObjectChunk(workspaceId, objectId, displayName, attributes);
   } catch (err) {
     process.stderr.write(
-      `executeAction: embedding failed for object ${objectId}: ${getErrorMessage(err)}\n`
+      `executeAction: embedding failed for object ${objectId}: ${getErrorMessage(err)}\n`,
     );
   }
 }
@@ -58,7 +58,7 @@ async function refreshChunk(
 async function verifyActionAccess(
   supabase: ReturnType<typeof getSupabaseClient>,
   actionId: string,
-  workspaceId: string
+  workspaceId: string,
 ) {
   const userId = getCurrentUserId();
   if (!userId) {
@@ -92,7 +92,7 @@ async function verifyActionAccess(
 export async function executeAction(
   supabase: ReturnType<typeof getSupabaseClient>,
   actionId: string,
-  workspaceId: string
+  workspaceId: string,
 ) {
   const { action } = await verifyActionAccess(supabase, actionId, workspaceId);
   if (action.status !== "approved" && action.status !== "proposed") {
@@ -141,7 +141,7 @@ export async function executeAction(
             value_type: "json",
             updated_at: new Date().toISOString(),
           },
-          { onConflict: "workspace_id, object_id, key" }
+          { onConflict: "workspace_id, object_id, key" },
         );
       if (upsertError) throw new Error(upsertError.message);
     }
@@ -150,7 +150,7 @@ export async function executeAction(
       workspaceId,
       objectId,
       (updated?.display_name as string) ?? objectId,
-      updates
+      updates,
     );
   } else if (type === "create_object") {
     const objectType = payload.object_type as string;
@@ -245,7 +245,7 @@ export async function executeAction(
  */
 function summarizePayload(
   type: string,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
 ): Record<string, unknown> {
   if (type === "update_object") {
     return {
@@ -269,7 +269,7 @@ export async function approveAction(
   supabase: ReturnType<typeof getSupabaseClient>,
   actionId: string,
   workspaceId: string,
-  approved: boolean
+  approved: boolean,
 ) {
   const { action } = await verifyActionAccess(supabase, actionId, workspaceId);
   if (action.status !== "proposed") {
@@ -291,7 +291,12 @@ export async function approveAction(
     .eq("workspace_id", workspaceId);
 
   if (error) throw new Error(error.message);
-  await actionLog(supabase, actionId, workspaceId, approved ? "approved" : "rejected");
+  await actionLog(
+    supabase,
+    actionId,
+    workspaceId,
+    approved ? "approved" : "rejected",
+  );
 
   if (approved) {
     await executeAction(supabase, actionId, workspaceId);

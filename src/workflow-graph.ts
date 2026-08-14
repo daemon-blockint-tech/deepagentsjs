@@ -41,12 +41,12 @@ import {
   Annotation,
   MemorySaver,
   type LangGraphRunnableConfig,
-} from "@langchain/langgraph"
-import { AIMessage, type BaseMessage } from "@langchain/core/messages"
-import { getAgentRegistry, DEFAULT_MODEL } from "./supervisor.js"
-import { executeWorkflow } from "./workflow-executor.js"
-import { routeMessage } from "./workflow-router.js"
-import { setCurrentUserId } from "./auth.js"
+} from "@langchain/langgraph";
+import { AIMessage, type BaseMessage } from "@langchain/core/messages";
+import { getAgentRegistry, DEFAULT_MODEL } from "./supervisor.js";
+import { executeWorkflow } from "./workflow-executor.js";
+import { routeMessage } from "./workflow-router.js";
+import { setCurrentUserId } from "./auth.js";
 
 // ---------------------------------------------------------------------------
 // State definition
@@ -62,9 +62,9 @@ const WorkflowState = Annotation.Root({
     reducer: (_, y) => y,
     default: () => null,
   }),
-})
+});
 
-type WorkflowStateType = typeof WorkflowState.State
+type WorkflowStateType = typeof WorkflowState.State;
 
 // ---------------------------------------------------------------------------
 // Graph nodes
@@ -76,47 +76,54 @@ type WorkflowStateType = typeof WorkflowState.State
  */
 async function routeNode(
   state: WorkflowStateType,
-  _config: LangGraphRunnableConfig
+  _config: LangGraphRunnableConfig,
 ): Promise<Partial<WorkflowStateType>> {
   // Get the last human message
   // Messages may be BaseMessage instances or raw objects from the server
-  const lastMessage = [...state.messages]
-    .reverse()
-    .find((m) => {
-      const role = typeof m._getType === "function" ? m._getType() : (m as { role?: string }).role
-      return role === "human" || role === "user"
-    })
+  const lastMessage = [...state.messages].reverse().find((m) => {
+    const role =
+      typeof m._getType === "function"
+        ? m._getType()
+        : (m as { role?: string }).role;
+    return role === "human" || role === "user";
+  });
 
   if (!lastMessage) {
     return {
       _workflowResult: {
         response: "I didn't receive a message.",
-        routing: { direct: true, workflow: null, reasoning: "No message", confidence: 1 },
+        routing: {
+          direct: true,
+          workflow: null,
+          reasoning: "No message",
+          confidence: 1,
+        },
         stepOutputs: [],
         completed: true,
         skippedSteps: [],
       },
-    }
+    };
   }
 
-  const content = (lastMessage as { content?: unknown }).content
+  const content = (lastMessage as { content?: unknown }).content;
   const userMessage =
-    typeof content === "string"
-      ? content
-      : JSON.stringify(content ?? "")
+    typeof content === "string" ? content : JSON.stringify(content ?? "");
 
   // Build history for the router (just roles, not content)
   const history = state.messages.map((m) => {
-    const role = typeof m._getType === "function" ? m._getType() : (m as { role?: string }).role
-    return { role: role ?? "unknown" }
-  })
+    const role =
+      typeof m._getType === "function"
+        ? m._getType()
+        : (m as { role?: string }).role;
+    return { role: role ?? "unknown" };
+  });
 
   // Route — this is code, not LLM
-  const routing = routeMessage(userMessage, history)
+  const routing = routeMessage(userMessage, history);
 
   return {
     _workflowResult: { routing, userMessage },
-  }
+  };
 }
 
 /**
@@ -126,51 +133,56 @@ async function routeNode(
  */
 async function executeNode(
   state: WorkflowStateType,
-  config: LangGraphRunnableConfig
+  config: LangGraphRunnableConfig,
 ): Promise<Partial<WorkflowStateType>> {
-  const result = state._workflowResult as
-    | { routing: unknown; userMessage?: string; response?: string }
-    | null
+  const result = state._workflowResult as {
+    routing: unknown;
+    userMessage?: string;
+    response?: string;
+  } | null;
 
   if (!result) {
     return {
       messages: [
         new AIMessage("I encountered an error processing your request."),
       ],
-    }
+    };
   }
 
   // If direct response, use the orchestrator LLM
   if (result.response) {
     return {
       messages: [new AIMessage(result.response)],
-    }
+    };
   }
 
-  const userMessage = result.userMessage ?? ""
-  const model = (config.configurable?.model as string) ?? DEFAULT_MODEL
-  const registry = await getAgentRegistry(model)
+  const userMessage = result.userMessage ?? "";
+  const model = (config.configurable?.model as string) ?? DEFAULT_MODEL;
+  const registry = await getAgentRegistry(model);
 
   // Build history for the executor
   const history = state.messages.map((m) => {
-    const role = typeof m._getType === "function" ? m._getType() : (m as { role?: string }).role
-    return { role: role ?? "unknown" }
-  })
+    const role =
+      typeof m._getType === "function"
+        ? m._getType()
+        : (m as { role?: string }).role;
+    return { role: role ?? "unknown" };
+  });
 
   // Execute the workflow (code-driven step sequencing + gates)
-  const execution = await executeWorkflow(userMessage, history, registry)
+  const execution = await executeWorkflow(userMessage, history, registry);
 
   return {
     _workflowResult: execution,
     messages: [new AIMessage(execution.response)],
-  }
+  };
 }
 
 // ---------------------------------------------------------------------------
 // Graph factory
 // ---------------------------------------------------------------------------
 
-let compiledGraph: ReturnType<typeof buildWorkflowGraph> | null = null
+let compiledGraph: ReturnType<typeof buildWorkflowGraph> | null = null;
 
 function buildWorkflowGraph() {
   const graph = new StateGraph(WorkflowState)
@@ -178,11 +190,11 @@ function buildWorkflowGraph() {
     .addNode("execute", executeNode)
     .addEdge(START, "route")
     .addEdge("route", "execute")
-    .addEdge("execute", END)
+    .addEdge("execute", END);
 
   return graph.compile({
     checkpointer: new MemorySaver(),
-  })
+  });
 }
 
 /**
@@ -191,9 +203,9 @@ function buildWorkflowGraph() {
  */
 export function getWorkflowGraph() {
   if (!compiledGraph) {
-    compiledGraph = buildWorkflowGraph()
+    compiledGraph = buildWorkflowGraph();
   }
-  return compiledGraph
+  return compiledGraph;
 }
 
 /**
@@ -207,13 +219,13 @@ export async function workflowGraph(config: LangGraphRunnableConfig) {
   const userId =
     (config.configurable?.user_id as string | undefined) ??
     process.env.DEFAULT_USER_ID ??
-    null
-  setCurrentUserId(userId)
+    null;
+  setCurrentUserId(userId);
 
   // Ensure the agent registry is built (specialists are needed by the executor)
   const model =
-    (config.configurable?.model as string | undefined) ?? DEFAULT_MODEL
-  await getAgentRegistry(model)
+    (config.configurable?.model as string | undefined) ?? DEFAULT_MODEL;
+  await getAgentRegistry(model);
 
-  return getWorkflowGraph()
+  return getWorkflowGraph();
 }

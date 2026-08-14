@@ -21,7 +21,9 @@ describe("HITL interrupt configuration", () => {
   });
 
   it("allows editing shell arguments but not sandboxed eval", () => {
-    const shell = CLONE_INTERRUPT_ON.run_shell as { allowedDecisions: string[] };
+    const shell = CLONE_INTERRUPT_ON.run_shell as {
+      allowedDecisions: string[];
+    };
     const evaluate = CLONE_INTERRUPT_ON.eval as { allowedDecisions: string[] };
 
     expect(shell.allowedDecisions).toContain("edit");

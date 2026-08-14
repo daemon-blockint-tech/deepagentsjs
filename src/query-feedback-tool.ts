@@ -1,15 +1,15 @@
-import { z } from "zod"
-import { tool } from "@langchain/core/tools"
-import { getSupabaseClient } from "./supabase.js"
-import { verifyWorkspaceMembership } from "./auth.js"
-import { withRetry, isTransientError } from "./fault-tolerance.js"
+import { z } from "zod";
+import { tool } from "@langchain/core/tools";
+import { getSupabaseClient } from "./supabase.js";
+import { verifyWorkspaceMembership } from "./auth.js";
+import { withRetry, isTransientError } from "./fault-tolerance.js";
 
 const DEFAULT_RETRY = {
   maxRetries: 2,
   initialDelayMs: 500,
   backoffFactor: 2,
   retryOn: isTransientError,
-}
+};
 
 /**
  * Query past feedback and decisions from the Ontology.
@@ -21,37 +21,37 @@ const DEFAULT_RETRY = {
  */
 export const queryFeedbackTool = tool(
   withRetry(async ({ workspace_id, limit, min_score, action_type }) => {
-    const supabase = getSupabaseClient()
-    await verifyWorkspaceMembership(supabase, workspace_id)
+    const supabase = getSupabaseClient();
+    await verifyWorkspaceMembership(supabase, workspace_id);
 
     // Query decisions joined with their action type
     let query = supabase
       .from("decisions")
       .select(
-        "id, action_id, outcome, feedback_score, created_at, executed_at, actions(type, payload)"
+        "id, action_id, outcome, feedback_score, created_at, executed_at, actions(type, payload)",
       )
       .eq("workspace_id", workspace_id)
       .order("created_at", { ascending: false })
-      .limit(Math.min(Math.max(1, limit ?? 10), 50))
+      .limit(Math.min(Math.max(1, limit ?? 10), 50));
 
     if (typeof min_score === "number") {
-      query = query.gte("feedback_score", min_score)
+      query = query.gte("feedback_score", min_score);
     }
 
-    const { data: decisions, error } = await query
+    const { data: decisions, error } = await query;
 
-    if (error) throw new Error(error.message)
+    if (error) throw new Error(error.message);
 
     // Filter by action type if specified (post-filter since join select
     // doesn't support where on the joined table easily)
     const filtered = action_type
       ? decisions.filter(
           (d: { actions?: { type?: string }[] }) =>
-            d.actions?.[0]?.type === action_type
+            d.actions?.[0]?.type === action_type,
         )
-      : decisions
+      : decisions;
 
-    return JSON.stringify(filtered)
+    return JSON.stringify(filtered);
   }, DEFAULT_RETRY),
   {
     name: "query_feedback",
@@ -77,7 +77,9 @@ export const queryFeedbackTool = tool(
       action_type: z
         .string()
         .optional()
-        .describe("Filter by action type (e.g. 'update_object', 'create_object')"),
+        .describe(
+          "Filter by action type (e.g. 'update_object', 'create_object')",
+        ),
     }),
-  }
-)
+  },
+);

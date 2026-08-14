@@ -7,7 +7,10 @@ export interface EvalInput {
   timeout_ms?: number;
 }
 
-export async function runJavaScript({ code, timeout_ms = 5000 }: EvalInput): Promise<string> {
+export async function runJavaScript({
+  code,
+  timeout_ms = 5000,
+}: EvalInput): Promise<string> {
   const QuickJS = await getQuickJS();
   const runtime = QuickJS.newRuntime();
   const context = runtime.newContext();
@@ -54,5 +57,5 @@ export const evalTool = tool(
       code: z.string().describe("JavaScript code to evaluate"),
       timeout_ms: z.number().optional().describe("Timeout in milliseconds"),
     }),
-  }
+  },
 );

@@ -41,7 +41,7 @@ describe("tools.ts workspace authorization", () => {
         workspace_id: "550e8400-e29b-41d4-a716-446655440000",
         type: "test",
         payload: {},
-      })
+      }),
     ).rejects.toThrow(/Unauthorized/);
   });
 
@@ -57,7 +57,7 @@ describe("tools.ts workspace authorization", () => {
         workspace_id: "550e8400-e29b-41d4-a716-446655440000",
         type: "test",
         payload: {},
-      })
+      }),
     ).rejects.toThrow(/Workspace access denied/);
   });
 
@@ -68,7 +68,9 @@ describe("tools.ts workspace authorization", () => {
     const insertQuery = {
       insert: vi.fn().mockReturnThis(),
       select: vi.fn().mockReturnThis(),
-      single: vi.fn().mockResolvedValue({ data: { id: "action-1" }, error: null }),
+      single: vi
+        .fn()
+        .mockResolvedValue({ data: { id: "action-1" }, error: null }),
     };
     fromMock = insertQuery;
 
@@ -90,7 +92,7 @@ describe("tools.ts workspace authorization", () => {
         workspace_id: "550e8400-e29b-41d4-a716-446655440000",
         type: "test",
         payload: {},
-      })
+      }),
     ).rejects.toThrow(/membership check failed: connection reset/);
   });
 
@@ -102,7 +104,7 @@ describe("tools.ts workspace authorization", () => {
       queryOntologyTool.invoke({
         workspace_id: "550e8400-e29b-41d4-a716-446655440000",
         query: "test",
-      })
+      }),
     ).rejects.toThrow(/Workspace access denied/);
   });
 
@@ -111,7 +113,9 @@ describe("tools.ts workspace authorization", () => {
     membershipQuery({ data: { id: "member-1" }, error: null });
 
     const ilikeMock = vi.fn().mockReturnThis();
-    const limitMock = vi.fn().mockResolvedValue({ data: [{ id: "obj-1" }], error: null });
+    const limitMock = vi
+      .fn()
+      .mockResolvedValue({ data: [{ id: "obj-1" }], error: null });
     fromMock = {
       select: vi.fn().mockReturnThis(),
       eq: vi.fn().mockReturnThis(),

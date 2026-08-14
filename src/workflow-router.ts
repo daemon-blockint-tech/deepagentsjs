@@ -28,18 +28,18 @@ export type SpecialistName =
   | "analysis"
   | "writing"
   | "pricing"
-  | "action"
+  | "action";
 
 /** A single step in a workflow. */
 export interface WorkflowStep {
   /** Which specialist runs this step. */
-  specialist: SpecialistName
+  specialist: SpecialistName;
   /** Human-readable description of what this step does. */
-  description: string
+  description: string;
   /** Gate that validates the step's input before running. */
-  gate?: ControlGateName
+  gate?: ControlGateName;
   /** Whether this step can be skipped if the gate fails (optional vs required). */
-  optional?: boolean
+  optional?: boolean;
 }
 
 /** Named control gates — reusable validation functions. */
@@ -51,30 +51,30 @@ export type ControlGateName =
   | "is_write_request"
   | "is_read_only"
   | "is_pricing_task"
-  | "is_analysis_task"
+  | "is_analysis_task";
 
 /** A predefined workflow — a named sequence of steps. */
 export interface Workflow {
   /** Unique identifier for this workflow. */
-  id: string
+  id: string;
   /** Human-readable name. */
-  name: string
+  name: string;
   /** When to use this workflow (matched against user message). */
-  description: string
+  description: string;
   /** The fixed sequence of steps. */
-  steps: WorkflowStep[]
+  steps: WorkflowStep[];
 }
 
 /** Result of routing a user message to a workflow. */
 export interface RoutingResult {
   /** The selected workflow, or null for direct response. */
-  workflow: Workflow | null
+  workflow: Workflow | null;
   /** Why this workflow was chosen (for audit/logging). */
-  reasoning: string
+  reasoning: string;
   /** Confidence score 0-1. */
-  confidence: number
+  confidence: number;
   /** Whether the router fell back to direct response. */
-  direct: boolean
+  direct: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -88,11 +88,12 @@ const RESEARCH_WORKFLOW: Workflow = {
   steps: [
     {
       specialist: "research",
-      description: "Search the ontology for relevant objects and return findings",
+      description:
+        "Search the ontology for relevant objects and return findings",
       gate: "has_workspace_context",
     },
   ],
-}
+};
 
 const ANALYSIS_WORKFLOW: Workflow = {
   id: "analysis",
@@ -110,7 +111,7 @@ const ANALYSIS_WORKFLOW: Workflow = {
       gate: "has_research_findings",
     },
   ],
-}
+};
 
 const REPORT_WORKFLOW: Workflow = {
   id: "report",
@@ -133,7 +134,7 @@ const REPORT_WORKFLOW: Workflow = {
       gate: "has_analysis_results",
     },
   ],
-}
+};
 
 const PRICING_WORKFLOW: Workflow = {
   id: "pricing",
@@ -156,7 +157,7 @@ const PRICING_WORKFLOW: Workflow = {
       gate: "is_write_request",
     },
   ],
-}
+};
 
 const ACTION_WORKFLOW: Workflow = {
   id: "action",
@@ -174,7 +175,7 @@ const ACTION_WORKFLOW: Workflow = {
       gate: "is_write_request",
     },
   ],
-}
+};
 
 const REPORT_AND_ACT_WORKFLOW: Workflow = {
   id: "report_and_act",
@@ -202,7 +203,7 @@ const REPORT_AND_ACT_WORKFLOW: Workflow = {
       gate: "is_write_request",
     },
   ],
-}
+};
 
 const PRICING_REPORT_WORKFLOW: Workflow = {
   id: "pricing_report",
@@ -230,7 +231,7 @@ const PRICING_REPORT_WORKFLOW: Workflow = {
       gate: "is_write_request",
     },
   ],
-}
+};
 
 /** All predefined workflows, ordered by specificity (most specific first). */
 const WORKFLOWS: Workflow[] = [
@@ -241,58 +242,65 @@ const WORKFLOWS: Workflow[] = [
   ANALYSIS_WORKFLOW,
   ACTION_WORKFLOW,
   RESEARCH_WORKFLOW,
-]
+];
 
 // ---------------------------------------------------------------------------
 // Routing classifier — keyword + pattern matching
 // ---------------------------------------------------------------------------
 
 interface RoutingPattern {
-  keywords: RegExp
-  workflow: Workflow
+  keywords: RegExp;
+  workflow: Workflow;
   /** Additional check — returns false if the pattern shouldn't match. */
-  condition?: (message: string, history: Array<{ role: string }>) => boolean
+  condition?: (message: string, history: Array<{ role: string }>) => boolean;
 }
 
 const PATTERNS: RoutingPattern[] = [
   // Pricing report + recommendations
   {
-    keywords: /(harga|price|pricing).*((laporan|report)|(rekomendasi|recommend|suggest|change|update))|(report|laporan).*(price|pricing)/i,
+    keywords:
+      /(harga|price|pricing).*((laporan|report)|(rekomendasi|recommend|suggest|change|update))|(report|laporan).*(price|pricing)/i,
     workflow: PRICING_REPORT_WORKFLOW,
   },
   // Report + propose actions
   {
-    keywords: /(laporan|report).*(rekomendasi|recommend|suggest|action|propose|update|change)|(rekomendasi|recommend).*(laporan|report)/i,
+    keywords:
+      /(laporan|report).*(rekomendasi|recommend|suggest|action|propose|update|change)|(rekomendasi|recommend).*(laporan|report)/i,
     workflow: REPORT_AND_ACT_WORKFLOW,
   },
   // Pricing only
   {
     keywords: /(harga|price|pricing|margin|competit)/i,
     workflow: PRICING_WORKFLOW,
-    condition: (msg) => /rekomendasi|recommend|suggest|change|update|strategy/i.test(msg),
+    condition: (msg) =>
+      /rekomendasi|recommend|suggest|change|update|strategy/i.test(msg),
   },
   // Report only (no action requested)
   {
     keywords: /(laporan|report|summary|ringkasan|draft|tulis|write)/i,
     workflow: REPORT_WORKFLOW,
-    condition: (msg) => !/(update|change|propose|execute|create|delete)/i.test(msg),
+    condition: (msg) =>
+      !/(update|change|propose|execute|create|delete)/i.test(msg),
   },
   // Analysis
   {
-    keywords: /(analisis|analyze|calculate|hitung|compute|simulat|evaluasi|evaluate|compare|banding)/i,
+    keywords:
+      /(analisis|analyze|calculate|hitung|compute|simulat|evaluasi|evaluate|compare|banding)/i,
     workflow: ANALYSIS_WORKFLOW,
   },
   // Action (write request)
   {
-    keywords: /(update|change|ubah|create|buat|delete|hapus|set|propose|execute)/i,
+    keywords:
+      /(update|change|ubah|create|buat|delete|hapus|set|propose|execute)/i,
     workflow: ACTION_WORKFLOW,
   },
   // Research (default for questions)
   {
-    keywords: /(apa|siapa|dimana|kapan|bagaimana|what|who|where|when|how|find|cari|lookup|search|show|tampilkan)/i,
+    keywords:
+      /(apa|siapa|dimana|kapan|bagaimana|what|who|where|when|how|find|cari|lookup|search|show|tampilkan)/i,
     workflow: RESEARCH_WORKFLOW,
   },
-]
+];
 
 /**
  * Route a user message to the appropriate workflow.
@@ -302,18 +310,21 @@ const PATTERNS: RoutingPattern[] = [
  */
 export function routeMessage(
   message: string,
-  history: Array<{ role: string }> = []
+  history: Array<{ role: string }> = [],
 ): RoutingResult {
-  const trimmed = message.trim()
+  const trimmed = message.trim();
 
   // Greetings and short messages → direct response
-  if (trimmed.length < 15 && !/(find|cari|show|update|create|analyze|report)/i.test(trimmed)) {
+  if (
+    trimmed.length < 15 &&
+    !/(find|cari|show|update|create|analyze|report)/i.test(trimmed)
+  ) {
     return {
       workflow: null,
       reasoning: "Short message or greeting — direct response",
       confidence: 0.9,
       direct: true,
-    }
+    };
   }
 
   // Follow-up in an existing conversation → direct response
@@ -324,43 +335,44 @@ export function routeMessage(
       reasoning: "Follow-up in existing conversation — direct response",
       confidence: 0.7,
       direct: true,
-    }
+    };
   }
 
   // Try each pattern
   for (const pattern of PATTERNS) {
     if (pattern.keywords.test(trimmed)) {
       if (pattern.condition && !pattern.condition(trimmed, history)) {
-        continue
+        continue;
       }
       return {
         workflow: pattern.workflow,
         reasoning: `Matched pattern: ${pattern.workflow.id} — ${pattern.workflow.description}`,
         confidence: 0.8,
         direct: false,
-      }
+      };
     }
   }
 
   // Default: research workflow (safe read-only)
   return {
     workflow: RESEARCH_WORKFLOW,
-    reasoning: "No specific pattern matched — defaulting to research (read-only)",
+    reasoning:
+      "No specific pattern matched — defaulting to research (read-only)",
     confidence: 0.5,
     direct: false,
-  }
+  };
 }
 
 /**
  * List all available workflows (for debugging/UI).
  */
 export function listWorkflows(): Workflow[] {
-  return WORKFLOWS
+  return WORKFLOWS;
 }
 
 /**
  * Get a workflow by ID.
  */
 export function getWorkflow(id: string): Workflow | null {
-  return WORKFLOWS.find((w) => w.id === id) ?? null
+  return WORKFLOWS.find((w) => w.id === id) ?? null;
 }

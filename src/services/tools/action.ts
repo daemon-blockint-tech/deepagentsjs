@@ -22,7 +22,11 @@ export async function propose(input: ProposeInput) {
   return JSON.parse(result as string) as { action_id: string; status: string };
 }
 
-export async function approve(actionId: string, workspaceId: string, approved: boolean) {
+export async function approve(
+  actionId: string,
+  workspaceId: string,
+  approved: boolean,
+) {
   const supabase = getSupabaseClient();
   await approveAction(supabase, actionId, workspaceId, approved);
 }

@@ -1,16 +1,16 @@
-import { z } from "zod"
-import { tool } from "@langchain/core/tools"
-import { getUserDecisionProfile } from "./experience-seeder.js"
-import { getSupabaseClient } from "./supabase.js"
-import { verifyWorkspaceMembership } from "./auth.js"
-import { withRetry, isTransientError } from "./fault-tolerance.js"
+import { z } from "zod";
+import { tool } from "@langchain/core/tools";
+import { getUserDecisionProfile } from "./experience-seeder.js";
+import { getSupabaseClient } from "./supabase.js";
+import { verifyWorkspaceMembership } from "./auth.js";
+import { withRetry, isTransientError } from "./fault-tolerance.js";
 
 const DEFAULT_RETRY = {
   maxRetries: 2,
   initialDelayMs: 500,
   backoffFactor: 2,
   retryOn: isTransientError,
-}
+};
 
 /**
  * Query the current user's decision patterns.
@@ -26,20 +26,20 @@ const DEFAULT_RETRY = {
  */
 export const queryDecisionPatternsTool = tool(
   withRetry(async ({ workspace_id }) => {
-    const supabase = getSupabaseClient()
-    await verifyWorkspaceMembership(supabase, workspace_id)
+    const supabase = getSupabaseClient();
+    await verifyWorkspaceMembership(supabase, workspace_id);
 
-    const profile = await getUserDecisionProfile(workspace_id)
+    const profile = await getUserDecisionProfile(workspace_id);
     if (!profile) {
       return JSON.stringify({
         status: "no_history",
         message:
           "No past decisions found. This appears to be a new user — " +
           "decision patterns will emerge as the user approves/rejects actions over time.",
-      })
+      });
     }
 
-    return JSON.stringify(profile)
+    return JSON.stringify(profile);
   }, DEFAULT_RETRY),
   {
     name: "query_decision_patterns",
@@ -51,5 +51,5 @@ export const queryDecisionPatternsTool = tool(
     schema: z.object({
       workspace_id: z.string().uuid(),
     }),
-  }
-)
+  },
+);

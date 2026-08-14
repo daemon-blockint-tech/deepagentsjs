@@ -16,8 +16,12 @@ export async function embedText(text: string): Promise<number[]> {
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${apiKey}`,
-      ...(process.env.OPENROUTER_APP_URL ? { "HTTP-Referer": process.env.OPENROUTER_APP_URL } : {}),
-      ...(process.env.OPENROUTER_APP_TITLE ? { "X-Title": process.env.OPENROUTER_APP_TITLE } : {}),
+      ...(process.env.OPENROUTER_APP_URL
+        ? { "HTTP-Referer": process.env.OPENROUTER_APP_URL }
+        : {}),
+      ...(process.env.OPENROUTER_APP_TITLE
+        ? { "X-Title": process.env.OPENROUTER_APP_TITLE }
+        : {}),
     },
     body: JSON.stringify({
       input: text,

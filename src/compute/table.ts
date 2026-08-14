@@ -17,7 +17,9 @@ export interface TableQueryResult {
  * Compute module: query tabular data through an external DuckDB / Polars / Iceberg endpoint.
  * If no COMPUTE_ENDPOINT is set, returns a stub result so the interface can still respond.
  */
-export async function queryTable(input: TableQueryInput): Promise<TableQueryResult> {
+export async function queryTable(
+  input: TableQueryInput,
+): Promise<TableQueryResult> {
   const endpoint = process.env.COMPUTE_ENDPOINT;
   if (!endpoint) {
     return {

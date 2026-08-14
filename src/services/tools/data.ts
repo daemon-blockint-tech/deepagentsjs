@@ -29,7 +29,7 @@ export async function queryData(input: DataQueryInput): Promise<unknown[]> {
       input.workspace_id,
       input.interface_slug,
       input.query,
-      input.limit ?? 10
+      input.limit ?? 10,
     );
   }
 

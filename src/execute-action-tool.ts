@@ -1,16 +1,16 @@
-import { z } from "zod"
-import { tool } from "@langchain/core/tools"
-import { getSupabaseClient } from "./supabase.js"
-import { verifyWorkspaceMembership } from "./auth.js"
-import { executeAction } from "./actions.js"
-import { withRetry, isTransientError } from "./fault-tolerance.js"
+import { z } from "zod";
+import { tool } from "@langchain/core/tools";
+import { getSupabaseClient } from "./supabase.js";
+import { verifyWorkspaceMembership } from "./auth.js";
+import { executeAction } from "./actions.js";
+import { withRetry, isTransientError } from "./fault-tolerance.js";
 
 const DEFAULT_RETRY = {
   maxRetries: 2,
   initialDelayMs: 500,
   backoffFactor: 2,
   retryOn: isTransientError,
-}
+};
 
 /**
  * Execute an approved action.
@@ -27,8 +27,8 @@ const DEFAULT_RETRY = {
  */
 export const executeActionTool = tool(
   withRetry(async ({ workspace_id, action_id }) => {
-    const supabase = getSupabaseClient()
-    await verifyWorkspaceMembership(supabase, workspace_id)
+    const supabase = getSupabaseClient();
+    await verifyWorkspaceMembership(supabase, workspace_id);
 
     // Check the action is in an executable state
     const { data: action, error } = await supabase
@@ -36,29 +36,37 @@ export const executeActionTool = tool(
       .select("id, status, type, payload")
       .eq("id", action_id)
       .eq("workspace_id", workspace_id)
-      .single()
+      .single();
 
     if (error || !action) {
-      throw new Error("Action not found")
+      throw new Error("Action not found");
     }
 
     if (action.status === "executed") {
-      return JSON.stringify({ action_id, status: "already_executed", type: action.type })
+      return JSON.stringify({
+        action_id,
+        status: "already_executed",
+        type: action.type,
+      });
     }
 
     if (action.status === "rejected") {
-      return JSON.stringify({ action_id, status: "rejected", type: action.type })
+      return JSON.stringify({
+        action_id,
+        status: "rejected",
+        type: action.type,
+      });
     }
 
     // Execute the action (write-back to ontology or external system)
-    await executeAction(supabase, action_id, workspace_id)
+    await executeAction(supabase, action_id, workspace_id);
 
     return JSON.stringify({
       action_id,
       status: "executed",
       type: action.type,
       payload: action.payload,
-    })
+    });
   }, DEFAULT_RETRY),
   {
     name: "execute_action",
@@ -68,7 +76,10 @@ export const executeActionTool = tool(
       "This is the write-back step that closes the operational loop.",
     schema: z.object({
       workspace_id: z.string().uuid(),
-      action_id: z.string().uuid().describe("ID of the approved action to execute"),
+      action_id: z
+        .string()
+        .uuid()
+        .describe("ID of the approved action to execute"),
     }),
-  }
-)
+  },
+);

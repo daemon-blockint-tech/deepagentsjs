@@ -49,7 +49,7 @@ export interface StorageUploadResult {
  * `media_objects` or `documents`. Accepts raw bytes or base64 string.
  */
 export async function uploadFile(
-  input: StorageUploadInput
+  input: StorageUploadInput,
 ): Promise<StorageUploadResult> {
   const supabase = getSupabaseClient();
   const bucket = getBucket(input.type);
@@ -61,7 +61,7 @@ export async function uploadFile(
       : input.data;
 
   const path = `${input.workspace_id}/${crypto.randomUUID()}${getFileExtension(
-    input.file_name
+    input.file_name,
   )}`;
 
   const { data: uploadData, error } = await supabase.storage
@@ -97,7 +97,8 @@ export async function uploadFile(
       .insert(record)
       .select("id")
       .single();
-    if (insertError || !data) throw new Error(insertError?.message || "Insert failed");
+    if (insertError || !data)
+      throw new Error(insertError?.message || "Insert failed");
     id = data.id;
   } else {
     const { data, error: insertError } = await supabase
@@ -105,7 +106,8 @@ export async function uploadFile(
       .insert(record)
       .select("id")
       .single();
-    if (insertError || !data) throw new Error(insertError?.message || "Insert failed");
+    if (insertError || !data)
+      throw new Error(insertError?.message || "Insert failed");
     id = data.id;
   }
 
@@ -158,7 +160,7 @@ export async function downloadFile(input: StorageDownloadInput): Promise<{
 
 export async function deleteFile(
   type: "media" | "documents",
-  id: string
+  id: string,
 ): Promise<void> {
   const supabase = getSupabaseClient();
   const bucket = getBucket(type);
@@ -178,8 +180,9 @@ export async function deleteFile(
 
   if (removeError) throw new Error(removeError.message);
 
-  const { error: deleteError } = await supabase.from(table).delete().eq("id", id);
+  const { error: deleteError } = await supabase
+    .from(table)
+    .delete()
+    .eq("id", id);
   if (deleteError) throw new Error(deleteError.message);
 }
-
-

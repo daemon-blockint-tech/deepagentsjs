@@ -6,7 +6,12 @@ import { withRetry, isTransientError } from "./fault-tolerance.js";
 
 const MAX_ONTOLOGY_LIMIT = 50;
 
-const DEFAULT_RETRY = { maxRetries: 2, initialDelayMs: 500, backoffFactor: 2, retryOn: isTransientError };
+const DEFAULT_RETRY = {
+  maxRetries: 2,
+  initialDelayMs: 500,
+  backoffFactor: 2,
+  retryOn: isTransientError,
+};
 
 function sanitizeSearch(value: string): string {
   // Strip Postgres ILIKE wildcard characters so the search is always a literal substring.
@@ -57,9 +62,14 @@ export const queryOntologyTool = tool(
     schema: z.object({
       workspace_id: z.string().uuid(),
       query: z.string().describe("Search text for display_name or external_id"),
-      limit: z.number().min(1).max(MAX_ONTOLOGY_LIMIT).optional().describe("Max results to return"),
+      limit: z
+        .number()
+        .min(1)
+        .max(MAX_ONTOLOGY_LIMIT)
+        .optional()
+        .describe("Max results to return"),
     }),
-  }
+  },
 );
 
 export const proposeActionTool = tool(
@@ -91,9 +101,14 @@ export const proposeActionTool = tool(
       "Inserts a record into the actions table and returns the action id.",
     schema: z.object({
       workspace_id: z.string().uuid(),
-      type: z.string().describe("Action type, e.g. 'send_email' or 'update_crm'"),
+      type: z
+        .string()
+        .describe("Action type, e.g. 'send_email' or 'update_crm'"),
       payload: z.record(z.unknown()).describe("Action payload"),
-      requires_approval: z.boolean().optional().describe("Whether approval is required"),
+      requires_approval: z
+        .boolean()
+        .optional()
+        .describe("Whether approval is required"),
     }),
-  }
+  },
 );

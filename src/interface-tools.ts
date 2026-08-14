@@ -1,14 +1,14 @@
-import { z } from "zod"
-import { tool } from "@langchain/core/tools"
-import { queryInterfaceObjects, executeInterfaceAction } from "./interfaces.js"
-import { withRetry, isTransientError } from "./fault-tolerance.js"
+import { z } from "zod";
+import { tool } from "@langchain/core/tools";
+import { queryInterfaceObjects, executeInterfaceAction } from "./interfaces.js";
+import { withRetry, isTransientError } from "./fault-tolerance.js";
 
 const DEFAULT_RETRY = {
   maxRetries: 2,
   initialDelayMs: 500,
   backoffFactor: 2,
   retryOn: isTransientError,
-}
+};
 
 /**
  * Query ontology objects through an Interface filter.
@@ -29,9 +29,9 @@ export const queryInterfaceTool = tool(
       workspace_id,
       interface_slug,
       query,
-      limit
-    )
-    return JSON.stringify(results)
+      limit,
+    );
+    return JSON.stringify(results);
   }, DEFAULT_RETRY),
   {
     name: "query_interface",
@@ -45,15 +45,22 @@ export const queryInterfaceTool = tool(
       workspace_id: z.string().uuid(),
       interface_slug: z
         .string()
-        .describe("Interface slug (e.g. 'pricing-view', 'customer-summary', 'competitor-data')"),
+        .describe(
+          "Interface slug (e.g. 'pricing-view', 'customer-summary', 'competitor-data')",
+        ),
       query: z
         .string()
         .optional()
         .describe("Search text for display_name or external_id"),
-      limit: z.number().min(1).max(50).optional().describe("Max results (default 10)"),
+      limit: z
+        .number()
+        .min(1)
+        .max(50)
+        .optional()
+        .describe("Max results (default 10)"),
     }),
-  }
-)
+  },
+);
 
 /**
  * Propose an action through an Interface.
@@ -68,9 +75,9 @@ export const proposeInterfaceActionTool = tool(
       workspace_id,
       interface_slug,
       action_type,
-      payload
-    )
-    return JSON.stringify(result)
+      payload,
+    );
+    return JSON.stringify(result);
   }, DEFAULT_RETRY),
   {
     name: "propose_interface_action",
@@ -89,7 +96,9 @@ export const proposeInterfaceActionTool = tool(
         .describe("Action type (e.g. 'update_object', 'create_object')"),
       payload: z
         .record(z.unknown())
-        .describe("Action payload (will be filtered to whitelisted properties)"),
+        .describe(
+          "Action payload (will be filtered to whitelisted properties)",
+        ),
     }),
-  }
-)
+  },
+);
