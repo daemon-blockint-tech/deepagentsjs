@@ -10,7 +10,7 @@ import express, {
   type Response,
 } from "express";
 import cors from "cors";
-import { runWithUserId } from "./auth.js";
+import { runWithUserId, verifyWorkspaceMembership } from "./auth.js";
 import { register } from "./metrics.js";
 import { getSupabaseClient } from "./supabase.js";
 import { approveAction, executeAction } from "./actions.js";
@@ -50,20 +50,90 @@ dotenv.config({ path: path.resolve(__dirname, "../../.env.local") });
 dotenv.config({ path: path.resolve(__dirname, "../.env.local") });
 
 const app: Express = express();
-app.use(cors({ origin: process.env.FRONTEND_URL || "http://localhost:3000" }));
+app.use(
+  cors({
+    origin:
+      process.env.FRONTEND_URL || /^http:\/\/(localhost|127\.0\.0\.1):\d+$/,
+  }),
+);
 app.use(express.json({ limit: "50mb" }));
 
 // Legacy engine routes use the configured service identity in an isolated async context.
 // User-facing chat routes override this with the authenticated request identity below.
-function withDefaultUser(
-  _req: Request,
-  _res: Response,
+/**
+ * Resolve the requesting user's identity. A valid Supabase JWT wins; without
+ * one we only fall back to DEFAULT_USER_ID (local dev convenience) — unset it
+ * in production so unauthenticated requests are rejected outright.
+ */
+async function authenticate(
+  req: Request,
+  res: Response,
   next: NextFunction,
-): void {
-  runWithUserId(process.env.DEFAULT_USER_ID ?? null, next);
+): Promise<void> {
+  // LangSmith webhooks authenticate with their own shared secret.
+  if (req.path.startsWith("/langsmith")) {
+    runWithUserId(null, next);
+    return;
+  }
+  const header = req.headers.authorization;
+  const token = header?.startsWith("Bearer ")
+    ? header.slice("Bearer ".length)
+    : "";
+  if (token) {
+    try {
+      const { data, error } = await getSupabaseClient().auth.getUser(token);
+      if (error || !data?.user) {
+        res.status(401).json({ error: "Invalid or expired token" });
+        return;
+      }
+      runWithUserId(data.user.id, next);
+    } catch {
+      res.status(401).json({ error: "Token verification failed" });
+    }
+    return;
+  }
+  if (process.env.DEFAULT_USER_ID) {
+    runWithUserId(process.env.DEFAULT_USER_ID, next);
+    return;
+  }
+  res.status(401).json({ error: "Authentication required" });
 }
 
-app.use("/api", withDefaultUser);
+/**
+ * Workspace data is only served to members. The service-role client bypasses
+ * RLS, so this middleware is the enforcement point for every /api route that
+ * scopes by workspace_id (query or body, with the same DEFAULT_WORKSPACE_ID
+ * fallback the route handlers use).
+ */
+async function requireWorkspaceAccess(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  if (req.path.startsWith("/langsmith")) {
+    next();
+    return;
+  }
+  const body = req.body as { workspace_id?: unknown } | undefined;
+  const workspaceId =
+    queryStr(req.query.workspace_id) ||
+    (typeof body?.workspace_id === "string" ? body.workspace_id : "") ||
+    process.env.DEFAULT_WORKSPACE_ID ||
+    "";
+  if (!workspaceId) {
+    next();
+    return;
+  }
+  try {
+    await verifyWorkspaceMembership(getSupabaseClient(), workspaceId);
+    next();
+  } catch (error) {
+    res.status(403).json({ error: getErrorMessage(error) });
+  }
+}
+
+app.use("/api", authenticate);
+app.use("/api", requireWorkspaceAccess);
 
 // LangSmith webhook handler — bypasses user auth (uses its own secret-based auth)
 app.use("/api/langsmith", langsmithWebhookRouter);
