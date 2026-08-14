@@ -23,38 +23,39 @@
  * - Backed by the same checkpointer/store (shared memory)
  * - Tracked in the dynamic registry for visibility
  */
-import { z } from "zod"
-import { tool } from "@langchain/core/tools"
-import {
-  createDeepAgent,
-  CompositeBackend,
-} from "deepagents"
-import { ChatOpenRouter } from "@langchain/openrouter"
-import type { InterruptOnConfig } from "langchain"
-import process from "node:process"
+import { z } from "zod";
+import { tool } from "@langchain/core/tools";
+import { createDeepAgent, CompositeBackend } from "deepagents";
+import { ChatOpenRouter } from "@langchain/openrouter";
+import type { InterruptOnConfig } from "langchain";
+import process from "node:process";
 
-import type { Agent } from "./supervisor-types.js"
-import { queryOntologyTool } from "./tools.js"
-import { proposeActionTool } from "./tools.js"
-import { executeTool } from "./sandbox.js"
-import { evalTool } from "./interpreter.js"
-import { semanticSearchTool } from "./semantic-search-tool.js"
-import { executeActionTool } from "./execute-action-tool.js"
-import { queryFeedbackTool } from "./query-feedback-tool.js"
-import { createTempObjectTool } from "./create-temp-object-tool.js"
-import { queryInterfaceTool, proposeInterfaceActionTool } from "./interface-tools.js"
-import { queryDecisionPatternsTool } from "./decision-pattern-tool.js"
-import { generateExperienceSeed } from "./experience-seeder.js"
+import type { Agent } from "./supervisor-types.js";
+import { queryOntologyTool } from "./tools.js";
+import { proposeActionTool } from "./tools.js";
+import { executeTool } from "./sandbox.js";
+import { evalTool } from "./interpreter.js";
+import { semanticSearchTool } from "./semantic-search-tool.js";
+import { queryRelationsTool } from "./relations-tool.js";
+import { executeActionTool } from "./execute-action-tool.js";
+import { queryFeedbackTool } from "./query-feedback-tool.js";
+import { createTempObjectTool } from "./create-temp-object-tool.js";
+import {
+  queryInterfaceTool,
+  proposeInterfaceActionTool,
+} from "./interface-tools.js";
+import { queryDecisionPatternsTool } from "./decision-pattern-tool.js";
+import { generateExperienceSeed } from "./experience-seeder.js";
 
 // ---------------------------------------------------------------------------
 // Tool pool — all available tools, keyed by name
 // ---------------------------------------------------------------------------
 
 interface ToolEntry {
-  tool: ReturnType<typeof tool>
-  name: string
-  description: string
-  requires_hitl: boolean
+  tool: ReturnType<typeof tool>;
+  name: string;
+  description: string;
+  requires_hitl: boolean;
 }
 
 const TOOL_POOL: Record<string, ToolEntry> = {
@@ -68,6 +69,13 @@ const TOOL_POOL: Record<string, ToolEntry> = {
     tool: semanticSearchTool,
     name: "semantic_search",
     description: "Semantic search over ontology using vector embeddings",
+    requires_hitl: false,
+  },
+  query_relations: {
+    tool: queryRelationsTool,
+    name: "query_relations",
+    description:
+      "Walk the ontology graph from an object to its connected objects",
     requires_hitl: false,
   },
   create_temp_object: {
@@ -121,17 +129,21 @@ const TOOL_POOL: Record<string, ToolEntry> = {
   query_decision_patterns: {
     tool: queryDecisionPatternsTool,
     name: "query_decision_patterns",
-    description: "Query the user's decision patterns (approval/rejection trends)",
+    description:
+      "Query the user's decision patterns (approval/rejection trends)",
     requires_hitl: false,
   },
-}
+};
 
-export const AVAILABLE_TOOL_NAMES = Object.keys(TOOL_POOL)
+export const AVAILABLE_TOOL_NAMES = Object.keys(TOOL_POOL);
 
 export function getToolDescriptions(): string {
   return Object.entries(TOOL_POOL)
-    .map(([key, entry]) => `- ${key}: ${entry.description}${entry.requires_hitl ? " (HITL-gated)" : ""}`)
-    .join("\n")
+    .map(
+      ([key, entry]) =>
+        `- ${key}: ${entry.description}${entry.requires_hitl ? " (HITL-gated)" : ""}`,
+    )
+    .join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -139,46 +151,46 @@ export function getToolDescriptions(): string {
 // ---------------------------------------------------------------------------
 
 interface SharedInfra {
-  backend: CompositeBackend
-  checkpointer: unknown
-  store: unknown
-  interruptOn: Record<string, boolean | InterruptOnConfig>
-  model: string
+  backend: CompositeBackend;
+  checkpointer: unknown;
+  store: unknown;
+  interruptOn: Record<string, boolean | InterruptOnConfig>;
+  model: string;
 }
 
-let infraRef: SharedInfra | null = null
+let infraRef: SharedInfra | null = null;
 
 export function setSharedInfra(infra: SharedInfra): void {
-  infraRef = infra
+  infraRef = infra;
 }
 
 function getInfra(): SharedInfra {
   if (!infraRef) {
-    throw new Error("Shared infra not initialized — call setSharedInfra first")
+    throw new Error("Shared infra not initialized — call setSharedInfra first");
   }
-  return infraRef
+  return infraRef;
 }
 
 // ---------------------------------------------------------------------------
 // Dynamic specialist registry
 // ---------------------------------------------------------------------------
 
-const dynamicSpecialists = new Map<string, Agent>()
+const dynamicSpecialists = new Map<string, Agent>();
 const dynamicSpecialistMeta = new Map<
   string,
   { name: string; role: string; tools: string[]; created_at: string }
->()
+>();
 
 /**
  * List all dynamically created specialists.
  */
 export function listDynamicSpecialists(): Array<{
-  name: string
-  role: string
-  tools: string[]
-  created_at: string
+  name: string;
+  role: string;
+  tools: string[];
+  created_at: string;
 }> {
-  return Array.from(dynamicSpecialistMeta.values())
+  return Array.from(dynamicSpecialistMeta.values());
 }
 
 /**
@@ -189,37 +201,40 @@ export function listDynamicSpecialists(): Array<{
  * twice returns the existing one.
  */
 export async function createDynamicSpecialist(params: {
-  name: string
-  role: string
-  tools: string[]
-  system_prompt: string
+  name: string;
+  role: string;
+  tools: string[];
+  system_prompt: string;
 }): Promise<Agent> {
-  const slug = params.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")
+  const slug = params.name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
 
   // Return existing if already created
-  const existing = dynamicSpecialists.get(slug)
-  if (existing) return existing
+  const existing = dynamicSpecialists.get(slug);
+  if (existing) return existing;
 
-  const infra = getInfra()
+  const infra = getInfra();
 
   // Validate + collect tools from the pool
-  const selectedTools: ReturnType<typeof tool>[] = []
+  const selectedTools: ReturnType<typeof tool>[] = [];
   for (const toolName of params.tools) {
-    const entry = TOOL_POOL[toolName]
+    const entry = TOOL_POOL[toolName];
     if (!entry) {
       throw new Error(
-        `Unknown tool '${toolName}'. Available: ${AVAILABLE_TOOL_NAMES.join(", ")}`
-      )
+        `Unknown tool '${toolName}'. Available: ${AVAILABLE_TOOL_NAMES.join(", ")}`,
+      );
     }
-    selectedTools.push(entry.tool)
+    selectedTools.push(entry.tool);
   }
 
   // Build HITL config — only gate tools that require it
-  const specialistInterruptOn: Record<string, boolean | InterruptOnConfig> = {}
+  const specialistInterruptOn: Record<string, boolean | InterruptOnConfig> = {};
   for (const toolName of params.tools) {
-    const entry = TOOL_POOL[toolName]
+    const entry = TOOL_POOL[toolName];
     if (entry.requires_hitl) {
-      specialistInterruptOn[toolName] = infra.interruptOn[toolName] ?? true
+      specialistInterruptOn[toolName] = infra.interruptOn[toolName] ?? true;
     }
   }
 
@@ -229,13 +244,11 @@ export async function createDynamicSpecialist(params: {
     // We don't have workspace_id here, but the auth context has it.
     // The experience seed is best-effort — if it fails, the specialist
     // still works, just without the decision history context.
-    ""
-  ).catch(() => "")
+    "",
+  ).catch(() => "");
 
   const experienceSection =
-    experienceSeed.length > 0
-      ? `\n\n${experienceSeed}`
-      : ""
+    experienceSeed.length > 0 ? `\n\n${experienceSeed}` : "";
 
   const fullPrompt = `${params.system_prompt}
 
@@ -250,10 +263,10 @@ You operate within the Clone multi-agent system. All data lives in the Ontology 
 - Do not make up data — if something is missing, say so
 - Return structured, clear output for the orchestrator to synthesize
 - You are part of a team — other specialists may have written temp objects you can read
-- If you have query_decision_patterns, use it to understand the user's decision style${experienceSection}`
+- If you have query_decision_patterns, use it to understand the user's decision style${experienceSection}`;
 
-  const apiKey = process.env.OPENROUTER_API_KEY
-  if (!apiKey) throw new Error("OPENROUTER_API_KEY is not set")
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) throw new Error("OPENROUTER_API_KEY is not set");
 
   const chatModel = new ChatOpenRouter({
     model: infra.model,
@@ -261,7 +274,7 @@ You operate within the Clone multi-agent system. All data lives in the Ontology 
     siteUrl: process.env.OPENROUTER_APP_URL,
     siteName: process.env.OPENROUTER_APP_TITLE,
     maxRetries: 0,
-  })
+  });
 
   const agent = createDeepAgent({
     model: chatModel,
@@ -273,25 +286,28 @@ You operate within the Clone multi-agent system. All data lives in the Ontology 
       ? { interruptOn: specialistInterruptOn }
       : {}),
     checkpointer: infra.checkpointer as never,
-  })
+  });
 
-  dynamicSpecialists.set(slug, agent)
+  dynamicSpecialists.set(slug, agent);
   dynamicSpecialistMeta.set(slug, {
     name: params.name,
     role: params.role,
     tools: params.tools,
     created_at: new Date().toISOString(),
-  })
+  });
 
-  return agent
+  return agent;
 }
 
 /**
  * Get a dynamically created specialist by name.
  */
 export function getDynamicSpecialist(name: string): Agent | undefined {
-  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")
-  return dynamicSpecialists.get(slug)
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+  return dynamicSpecialists.get(slug);
 }
 
 // ---------------------------------------------------------------------------
@@ -301,21 +317,22 @@ export function getDynamicSpecialist(name: string): Agent | undefined {
 export const createSpecialistTool = tool(
   async ({ name, role, tools, system_prompt }) => {
     // Validate tool names
-    const invalid = tools.filter((t) => !TOOL_POOL[t])
+    const invalid = tools.filter((t) => !TOOL_POOL[t]);
     if (invalid.length > 0) {
-      return `Error: Unknown tools: ${invalid.join(", ")}. Available tools:\n${getToolDescriptions()}`
+      return `Error: Unknown tools: ${invalid.join(", ")}. Available tools:\n${getToolDescriptions()}`;
     }
 
-    await createDynamicSpecialist({ name, role, tools, system_prompt })
+    await createDynamicSpecialist({ name, role, tools, system_prompt });
 
     return JSON.stringify({
       status: "created",
       name,
       role,
       tools,
-      message: `Specialist '${name}' created with tools: ${tools.join(", ")}. ` +
+      message:
+        `Specialist '${name}' created with tools: ${tools.join(", ")}. ` +
         `Invoke it using delegate_to_specialist with name '${name}'.`,
-    })
+    });
   },
   {
     name: "create_specialist",
@@ -328,7 +345,9 @@ export const createSpecialistTool = tool(
     schema: z.object({
       name: z
         .string()
-        .describe("Short name for the specialist, e.g. 'SEO Specialist' or 'Legal Reviewer'"),
+        .describe(
+          "Short name for the specialist, e.g. 'SEO Specialist' or 'Legal Reviewer'",
+        ),
       role: z
         .string()
         .describe("One-line description of the specialist's role"),
@@ -336,25 +355,30 @@ export const createSpecialistTool = tool(
         .array(z.string())
         .describe(
           "Tool names to give this specialist. Available: " +
-            AVAILABLE_TOOL_NAMES.join(", ")
+            AVAILABLE_TOOL_NAMES.join(", "),
         ),
       system_prompt: z
         .string()
-        .describe("Detailed system prompt for the specialist — its instructions, approach, and constraints"),
+        .describe(
+          "Detailed system prompt for the specialist — its instructions, approach, and constraints",
+        ),
     }),
-  }
-)
+  },
+);
 
 export const delegateToSpecialistTool = tool(
   async ({ name, task }) => {
-    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")
+    const slug = name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "");
 
     // Check dynamic specialists first
-    let agent = getDynamicSpecialist(name)
+    let agent = getDynamicSpecialist(name);
 
     // Fall back to hardcoded specialists (so this tool can also invoke them)
     if (!agent) {
-      const registry = getHardcodedRegistry()
+      const registry = getHardcodedRegistry();
       if (registry) {
         const hardcoded: Record<string, Agent | undefined> = {
           research: registry.research,
@@ -362,34 +386,36 @@ export const delegateToSpecialistTool = tool(
           writing: registry.writing,
           pricing: registry.pricing,
           action: registry.action,
-        }
-        agent = hardcoded[slug]
+        };
+        agent = hardcoded[slug];
       }
     }
 
     if (!agent) {
       const available = [
-        ...Array.from(dynamicSpecialistMeta.keys()).map((k) => dynamicSpecialistMeta.get(k)!.name),
+        ...Array.from(dynamicSpecialistMeta.keys()).map(
+          (k) => dynamicSpecialistMeta.get(k)!.name,
+        ),
         "research",
         "analysis",
         "writing",
         "pricing",
         "action",
-      ]
-      return `Error: Specialist '${name}' not found. Available specialists: ${available.join(", ")}`
+      ];
+      return `Error: Specialist '${name}' not found. Available specialists: ${available.join(", ")}`;
     }
 
     const result = await agent.invoke({
       messages: [{ role: "user", content: task }],
-    })
+    });
 
-    const last = (result.messages as Array<{ content?: unknown }>).at(-1)
+    const last = (result.messages as Array<{ content?: unknown }>).at(-1);
     const content =
       typeof last?.content === "string"
         ? last.content
-        : JSON.stringify(last?.content ?? null)
+        : JSON.stringify(last?.content ?? null);
 
-    return `${name} output:\n${content}`
+    return `${name} output:\n${content}`;
   },
   {
     name: "delegate_to_specialist",
@@ -401,36 +427,41 @@ export const delegateToSpecialistTool = tool(
     schema: z.object({
       name: z
         .string()
-        .describe("Name of the specialist to invoke (e.g. 'SEO Specialist' or 'research')"),
+        .describe(
+          "Name of the specialist to invoke (e.g. 'SEO Specialist' or 'research')",
+        ),
       task: z.string().describe("Specific task for the specialist"),
     }),
-  }
-)
+  },
+);
 
 // ---------------------------------------------------------------------------
 // Hardcoded registry reference (for fallback delegation)
 // ---------------------------------------------------------------------------
 
 interface AgentRegistry {
-  orchestrator: Agent
-  research: Agent
-  analysis: Agent
-  writing: Agent
-  pricing: Agent
-  action: Agent
+  orchestrator: Agent;
+  research: Agent;
+  analysis: Agent;
+  writing: Agent;
+  pricing: Agent;
+  action: Agent;
 }
 
-let hardcodedRegistryRef: AgentRegistry | null = null
+let hardcodedRegistryRef: AgentRegistry | null = null;
 
 export function setHardcodedRegistry(registry: AgentRegistry): void {
-  hardcodedRegistryRef = registry
+  hardcodedRegistryRef = registry;
 }
 
 function getHardcodedRegistry(): AgentRegistry | null {
-  return hardcodedRegistryRef
+  return hardcodedRegistryRef;
 }
 
 /**
  * All dynamic specialist tools, exported as an array.
  */
-export const dynamicSpecialistTools = [createSpecialistTool, delegateToSpecialistTool]
+export const dynamicSpecialistTools = [
+  createSpecialistTool,
+  delegateToSpecialistTool,
+];
